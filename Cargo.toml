@@ -1,0 +1,11 @@
+[package]
+name = "yamdview"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+base64 = "0.23.1"
+merman = { version = "0.7.0", features = ["raster"] }
+pulldown-cmark = "0.13.4"
+ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
+tui-markdown = "0.3.9"
