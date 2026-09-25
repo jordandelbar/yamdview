@@ -83,14 +83,14 @@ mod tests {
             text.lines.iter().flat_map(|l| &l.spans).find(|s| s.content.contains(needle)).unwrap().style
         };
         let rgb = |c: [u8; 3]| Some(Color::Rgb(c[0], c[1], c[2]));
-        assert_eq!(span("Title").fg, rgb(t.purple));
+        assert_eq!(span("Title").fg, rgb(t.heading));
         assert!(span("Title").add_modifier.contains(Modifier::BOLD));
-        assert_eq!(span("strong").fg, rgb(t.purple)); // bold in a heading stays heading-colored
-        assert_eq!(span("bold").fg, rgb(t.orange));
-        assert_eq!(span("slanted").fg, rgb(t.yellow));
-        assert_eq!(span("code").fg, rgb(t.green));
-        assert_eq!(span("link").fg, rgb(t.cyan));
-        assert_eq!(span("fn").fg, rgb(t.pink)); // keyword
-        assert_eq!(span("main").fg, rgb(t.green)); // function name
+        assert_eq!(span("strong").fg, rgb(t.heading)); // bold in a heading stays heading-colored
+        assert_eq!(span("bold").fg, rgb(t.bold));
+        assert_eq!(span("slanted").fg, rgb(t.italic));
+        assert_eq!(span("code").fg, rgb(t.code));
+        assert_eq!(span("link").fg, rgb(t.link));
+        assert_eq!(span("fn").fg, rgb(t.keyword)); // keyword
+        assert_eq!(span("main").fg, rgb(t.function)); // function name
     }
 }

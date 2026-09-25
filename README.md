@@ -9,8 +9,14 @@ cargo run --release -- README.md
 ```
 
 A live viewer: it re-renders when the file is saved or the pane is resized,
-so run it in a split next to your editor. Diagrams pick up Ghostty's colors
-and font (`ghostty +show-config`).
+so run it in a split next to your editor.
+
+Colors and font come from `~/.config/yamdview/theme`: one `role = #rrggbb`
+line per role (`background`, `foreground`, `selection`, `muted`, `heading`,
+`bold`, `italic`, `code`, `link`, `quote`, `comment`, `keyword`, `string`,
+`function`, `type`, `number`, `parameter`, `accent`, `note`, `info`,
+`success`, `warning`, `error`) plus `font-family = Name`. Without that file
+they come from Ghostty (`ghostty +show-config`), else Dracula.
 
 Keys: `j`/`k` or arrows, `space`/`b` page, `ctrl-d`/`ctrl-u` half page,
 `g`/`G` top/bottom, mouse wheel, `q` to quit.
