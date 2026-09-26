@@ -4,7 +4,7 @@
 
 A terminal markdown viewer that draws mermaid diagrams as images.
 
-![yamdview showing the showcase in Ghostty: a highlighted code block, then a flowchart and a sequence diagram drawn inline](docs/screenshot.png)
+![yamdview showing the showcase in Ghostty: highlighted code in rounded boxes, then a flowchart and a sequence diagram drawn inline](docs/screenshot.png)
 
 It redraws whenever the file is saved, so it fits in a split next to your
 editor. Diagrams are rendered locally with

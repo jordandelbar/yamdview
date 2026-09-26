@@ -14,13 +14,30 @@ Plain text with **bold**, _italic_, `inline code` and a
 1. A numbered list
 2. with two items
 
+- [x] Draw mermaid diagrams
+- [x] Search as you type
+- [ ] Read from stdin
+
 > A quote.
 
+### Alerts
+
+Each kind is colored by its own theme role.
+
 > [!NOTE]
-> An alert, colored by the `info` theme role.
+> A note, colored by `info`.
+
+> [!TIP]
+> A tip, colored by `success`.
+
+> [!IMPORTANT]
+> Something important, colored by `accent`.
 
 > [!WARNING]
-> Another one, colored by `warning`.
+> A warning, colored by `warning`.
+
+> [!CAUTION]
+> A caution, colored by `error`.
 
 | Column | Another column |
 | ------ | -------------- |

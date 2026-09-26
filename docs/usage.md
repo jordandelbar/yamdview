@@ -90,6 +90,6 @@ diagrams.
 | `muted`                                                                   | Rules, table borders, metadata                    |
 | `heading`, `bold`, `italic`, `code`, `link`, `quote`                      | Markdown text (`code` is inline code)             |
 | `comment`, `keyword`, `string`, `function`, `type`, `number`, `parameter` | Syntax highlighting in code blocks                |
-| `accent`                                                                  | Diagram borders and node tint, the current match  |
+| `accent`                                                                  | Diagram borders and node tint, the current match, `[!IMPORTANT]` alerts |
 | `note`                                                                    | Diagram notes                                     |
-| `info`, `success`, `warning`, `error`                                     | Alerts such as `> [!NOTE]`, and diagram colors    |
+| `info`, `success`, `warning`, `error`                                     | The other alerts (`[!NOTE]`, `[!TIP]`, `[!WARNING]`, `[!CAUTION]`), and diagram colors |

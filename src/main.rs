@@ -4,7 +4,7 @@ mod selection;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use diacritics::DIACRITICS;
-use yamdview::{Chunk, Theme, diagram, markdown, split};
+use yamdview::{Chunk, Theme, boxed, diagram, markdown, split};
 use ratatui::{
     Frame,
     crossterm::{
@@ -122,9 +122,22 @@ impl Viewer {
 
         self.blocks.clear();
         self.search.clear_layout();
+        let mut after_box = false;
         for chunk in split(&md) {
+            if matches!(chunk, Chunk::Text(t) if t.trim().is_empty()) {
+                continue;
+            }
+            // Boxes carry a blank line on each side; two in a row share one.
+            let prev_box = std::mem::replace(&mut after_box, matches!(chunk, Chunk::Boxed { .. }));
             let text = match chunk {
                 Chunk::Text(t) => markdown(t, &self.theme),
+                Chunk::Boxed { md, title, alert } => {
+                    let mut text = boxed(&md, &title, alert, &self.theme, width);
+                    if prev_box {
+                        text.lines.remove(0);
+                    }
+                    text
+                }
                 Chunk::Mermaid { raw, source } => match diagram(&source, &self.theme, u32::from(width) * cell.0, cell.1) {
                     Ok(Some(png)) => {
                         let (w, h) = png_size(&png);
@@ -468,5 +481,29 @@ mod tests {
         let blocks = paragraphs(Text::from("x ".repeat(70_000)), 1);
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].1, u16::MAX);
+    }
+
+    #[test]
+    fn consecutive_boxes_share_one_blank_line() {
+        let path = std::env::temp_dir().join(format!("yamdview-boxes-{}.md", std::process::id()));
+        std::fs::write(&path, "Intro.\n\n> [!NOTE]\n> a\n\n> [!TIP]\n> b\n\nOutro.\n").unwrap();
+        let mut viewer = Viewer {
+            path: path.clone(), mtime: None, ids: Vec::new(), blocks: Vec::new(),
+            scroll: 0, tmux: false, theme: Theme::dracula(), search: search::Search::default(),
+        };
+        viewer.rebuild(&mut Vec::new(), 40).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let height = viewer.total() as u16;
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, height)).unwrap();
+        terminal.draw(|frame| viewer.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let rows: Vec<String> = (0..height)
+            .map(|y| (0..40).map(|x| buffer[(x, y)].symbol()).collect::<String>().trim_end().to_string())
+            .collect();
+        let first = |c: char| rows.iter().position(|r| r.starts_with(c)).unwrap();
+        let tip_top = rows.iter().position(|r| r.starts_with("╭─ Tip")).unwrap();
+        assert_eq!(rows[first('╭') - 1], "", "blank line above the first box: {rows:#?}");
+        assert_eq!(tip_top - first('╰'), 2, "one blank line between the boxes: {rows:#?}");
+        assert_eq!(rows[rows.len() - 2], "", "blank line before the outro: {rows:#?}");
     }
 }

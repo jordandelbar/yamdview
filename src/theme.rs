@@ -337,6 +337,13 @@ impl StyleSheet for Theme {
     fn footnote_ref(&self) -> Style {
         Style::new().fg(color(self.link))
     }
+    // Headings stand out by color and weight; code blocks and alerts get boxes (lib.rs).
+    fn heading_marker(&self, _level: u8) -> &str {
+        ""
+    }
+    fn code_block_fence(&self) -> &str {
+        ""
+    }
     fn alert(&self, kind: AlertKind) -> Style {
         let c = match kind {
             AlertKind::Note => self.info,
