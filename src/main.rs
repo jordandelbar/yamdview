@@ -342,34 +342,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             _ => s,
                         }
                     }
-                    event::Event::Mouse(m) => match m.kind {
-                        MouseEventKind::ScrollDown => {
-                            selection.clear();
-                            s.saturating_add(3)
+                    event::Event::Mouse(m) => {
+                        // Keep selections off the search status line.
+                        let row = m.row.min(height.saturating_sub(1));
+                        match m.kind {
+                            MouseEventKind::ScrollDown => {
+                                selection.clear();
+                                s.saturating_add(3)
+                            }
+                            MouseEventKind::ScrollUp => {
+                                selection.clear();
+                                s.saturating_sub(3)
+                            }
+                            MouseEventKind::Down(MouseButton::Left) if v.tmux => {
+                                selection.start(m.column, row);
+                                repaint = true;
+                                s
+                            }
+                            MouseEventKind::Drag(MouseButton::Left) if v.tmux => {
+                                selection.drag(m.column, row);
+                                repaint = true;
+                                s
+                            }
+                            MouseEventKind::Up(MouseButton::Left) if v.tmux => {
+                                selection.drag(m.column, row);
+                                // Best effort: a failed copy (old tmux, no server) must not quit the viewer.
+                                let _ = selection::copy_to_tmux(&selection.text(&rendered));
+                                selection.clear();
+                                repaint = true;
+                                s
+                            }
+                            _ => s,
                         }
-                        MouseEventKind::ScrollUp => {
-                            selection.clear();
-                            s.saturating_sub(3)
-                        }
-                        MouseEventKind::Down(MouseButton::Left) if v.tmux => {
-                            selection.start(m.column, m.row);
-                            repaint = true;
-                            s
-                        }
-                        MouseEventKind::Drag(MouseButton::Left) if v.tmux => {
-                            selection.drag(m.column, m.row);
-                            repaint = true;
-                            s
-                        }
-                        MouseEventKind::Up(MouseButton::Left) if v.tmux => {
-                            selection.drag(m.column, m.row);
-                            selection::copy_to_tmux(&selection.text(&rendered))?;
-                            selection.clear();
-                            repaint = true;
-                            s
-                        }
-                        _ => s,
-                    },
+                    }
                     event::Event::Resize(..) => {
                         dirty = true;
                         s
