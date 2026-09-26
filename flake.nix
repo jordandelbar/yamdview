@@ -21,6 +21,8 @@
             clippy
             lefthook
             commitlint
+            actionlint
+            python3Packages.pre-commit-hooks
           ];
         };
       });

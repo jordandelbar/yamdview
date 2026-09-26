@@ -2,3 +2,16 @@ commit-msg:
   commands:
     commitlint:
       run: commitlint --edit {1}
+
+pre-push:
+  commands:
+    clippy:
+      run: cargo clippy --all-targets --locked -- -D warnings
+    actionlint:
+      run: actionlint
+    trailing-whitespace:
+      file_types: text
+      run: trailing-whitespace-fixer {all_files}
+    end-of-file:
+      file_types: text
+      run: end-of-file-fixer {all_files}
