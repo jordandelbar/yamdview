@@ -20,9 +20,14 @@ jobs:
       - uses: cachix/install-nix-action@v31
       - run: nix develop -c lefthook run pre-push
       - run: nix develop -c commitlint --from "$FROM" --to "$TO"
+      # A release commit only bumps versions; its code was tested on the commit before.
       - id: changes
+        env:
+          HEAD_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
-          if git diff --name-only "$FROM...$TO" | grep -qE '^(src/|Cargo\.(toml|lock)$|flake\.(nix|lock)$|\.github/workflows/)'; then
+          if [[ "$HEAD_MESSAGE" == "chore: Release "* ]]; then
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          elif git diff --name-only "$FROM...$TO" | grep -qE '^(src/|Cargo\.(toml|lock)$|flake\.(nix|lock)$|\.github/workflows/)'; then
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
