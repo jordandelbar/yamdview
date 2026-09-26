@@ -6,6 +6,8 @@ Render markdown in the terminal, with mermaid diagrams drawn as images
 (kitty graphics protocol: Ghostty, kitty, WezTerm). No browser involved:
 diagrams go through [merman](https://github.com/Latias94/merman).
 
+![yamdview showing this README in Ghostty, with its mermaid diagrams drawn inline](docs/screenshot.png)
+
 ```sh
 cargo run --release -- README.md
 ```
