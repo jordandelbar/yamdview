@@ -25,7 +25,7 @@ use std::{
     process::Command,
     time::{Duration, SystemTime},
 };
-use yamdview::{Chunk, Theme, boxed, diagram, markdown, split};
+use yamdview::{Chunk, Theme, boxed, diagram, is_heading, markdown, split};
 
 /// Kitty graphics escape, wrapped for tmux passthrough (`allow-passthrough on`) when needed.
 fn kitty(out: &mut impl Write, body: &str, tmux: bool) -> std::io::Result<()> {
@@ -94,41 +94,56 @@ impl Block {
 
 /// Wrap `text` into paragraphs of about 1024 rows, split between source lines (wrapping
 /// is per line, so rows add up exactly). ratatui scrolls a Paragraph by u16 rows, and
-/// small blocks keep per-frame clones and search layout cheap.
-fn paragraphs(text: Text<'static>, width: u16) -> Vec<(Paragraph<'static>, u16)> {
+/// small blocks keep per-frame clones and search layout cheap. Each block comes with
+/// the rows, within it, where the lines matching `heading` start.
+fn paragraphs(
+    text: Text<'static>,
+    width: u16,
+    heading: impl Fn(&Line) -> bool,
+) -> Vec<(Paragraph<'static>, u16, Vec<u16>)> {
     let Text {
         lines,
         style,
         alignment,
     } = text;
     // ponytail: one source line wrapping past 65535 rows (~5 MB at 80 columns) is cut there.
-    let block = |lines, rows: usize| {
+    let clamp = |rows: usize| u16::try_from(rows).unwrap_or(u16::MAX);
+    let block = |lines, rows: usize, heads| {
         let p = Paragraph::new(Text {
             lines,
             style,
             alignment,
         })
         .wrap(Wrap { trim: false });
-        (p, u16::try_from(rows).unwrap_or(u16::MAX))
+        (p, clamp(rows), heads)
     };
-    let (mut out, mut chunk, mut rows) = (Vec::new(), Vec::new(), 0);
+    let (mut out, mut chunk, mut rows, mut heads) = (Vec::new(), Vec::new(), 0, Vec::new());
     for line in lines {
         let n = Paragraph::new(line.clone())
             .wrap(Wrap { trim: false })
             .line_count(width);
         if rows + n > 1024 && !chunk.is_empty() {
-            out.push(block(std::mem::take(&mut chunk), rows));
+            out.push(block(
+                std::mem::take(&mut chunk),
+                rows,
+                std::mem::take(&mut heads),
+            ));
             rows = 0;
+        }
+        if heading(&line) {
+            heads.push(clamp(rows));
         }
         rows += n;
         chunk.push(line);
     }
-    out.push(block(chunk, rows));
+    out.push(block(chunk, rows, heads));
     out
 }
 
 struct Viewer {
     path: PathBuf,
+    /// Document rows where headings start, in order, for `[` and `]`.
+    headings: Vec<u32>,
     /// Markdown piped in on stdin. Replaces the file, and there's nothing to watch.
     stdin: Option<String>,
     mtime: Option<SystemTime>,
@@ -166,6 +181,7 @@ impl Viewer {
         let max = DIACRITICS.len() as u32;
 
         self.blocks.clear();
+        self.headings.clear();
         self.search.clear_layout();
         let mut after_box = false;
         for chunk in split(&md) {
@@ -209,7 +225,10 @@ impl Viewer {
                     }
                 }
             };
-            for (p, h) in paragraphs(text, width) {
+            for (p, h, heads) in paragraphs(text, width, |line| is_heading(line, &self.theme)) {
+                let offset = self.total();
+                self.headings
+                    .extend(heads.into_iter().map(|row| offset + u32::from(row)));
                 self.blocks.push(Block::Text(Box::new(p), h));
             }
         }
@@ -231,6 +250,15 @@ impl Viewer {
                 self.search.cache(p, width, *h, offset);
             }
             offset += block.height();
+        }
+    }
+
+    /// The first heading below row `from`, or with `backwards` the last one above it.
+    fn heading(&self, from: u32, backwards: bool) -> Option<u32> {
+        if backwards {
+            self.headings.iter().rev().find(|&&row| row < from).copied()
+        } else {
+            self.headings.iter().find(|&&row| row > from).copied()
         }
     }
 
@@ -353,6 +381,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut v = Viewer {
         path,
         stdin,
+        headings: Vec::new(),
         mtime: None,
         blocks: Vec::new(),
         ids: Vec::new(),
@@ -442,6 +471,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 v.search.begin(s);
                                 s
                             }
+                            KeyCode::Char(']') => v.heading(s, false).unwrap_or(s),
+                            KeyCode::Char('[') => v.heading(s, true).unwrap_or(s),
                             KeyCode::Char('n') => {
                                 search_jump = true;
                                 v.search.jump(s, false).unwrap_or(s)
@@ -547,6 +578,7 @@ mod tests {
         let mut viewer = Viewer {
             path: PathBuf::new(),
             stdin: None,
+            headings: Vec::new(),
             mtime: None,
             ids: Vec::new(),
             blocks: vec![
@@ -591,6 +623,7 @@ mod tests {
         let mut viewer = Viewer {
             path: path.clone(),
             stdin: None,
+            headings: Vec::new(),
             mtime: None,
             ids: Vec::new(),
             blocks: Vec::new(),
@@ -621,8 +654,20 @@ mod tests {
     }
 
     #[test]
+    fn heading_rows_are_relative_to_their_block() {
+        let mut lines: Vec<Line> = (0..1500).map(|_| Line::from("x")).collect();
+        lines[1100] = Line::from("H");
+        let blocks = paragraphs(Text::from(lines), 10, |l| {
+            l.spans.first().is_some_and(|s| s.content == "H")
+        });
+        assert_eq!(blocks.len(), 2);
+        assert_eq!((blocks[0].1, blocks[0].2.as_slice()), (1024, &[][..]));
+        assert_eq!(blocks[1].2, [1100 - 1024], "offset within the second block");
+    }
+
+    #[test]
     fn single_line_past_u16_rows_is_cut_off() {
-        let blocks = paragraphs(Text::from("x ".repeat(70_000)), 1);
+        let blocks = paragraphs(Text::from("x ".repeat(70_000)), 1, |_| false);
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].1, u16::MAX);
     }
@@ -638,6 +683,7 @@ mod tests {
         let mut viewer = Viewer {
             path: path.clone(),
             stdin: None,
+            headings: Vec::new(),
             mtime: None,
             ids: Vec::new(),
             blocks: Vec::new(),
@@ -686,6 +732,7 @@ mod tests {
         let mut viewer = Viewer {
             path: PathBuf::from("-"),
             stdin: Some("# Piped\n\nfrom a pipe\n".into()),
+            headings: Vec::new(),
             mtime: None,
             ids: Vec::new(),
             blocks: Vec::new(),
@@ -710,5 +757,52 @@ mod tests {
             .collect();
         assert_eq!(rows[0], "Piped");
         assert!(rows.contains(&"from a pipe".to_string()), "{rows:#?}");
+    }
+
+    #[test]
+    fn heading_rows_match_the_screen_and_jumps_move_between_them() {
+        let path = std::env::temp_dir().join(format!("yamdview-headings-{}.md", std::process::id()));
+        let long = "word ".repeat(30);
+        std::fs::write(
+            &path,
+            format!(
+                "# Top\n\n{long}\n\n## Code\n\n```sh\n# not a heading\n```\n\n## Table\n\n| a |\n| - |\n| b |\n\n### Last\n\nend\n"
+            ),
+        )
+        .unwrap();
+        let mut viewer = Viewer {
+            path: path.clone(),
+            stdin: None,
+            headings: Vec::new(),
+            mtime: None,
+            ids: Vec::new(),
+            blocks: Vec::new(),
+            scroll: 0,
+            tmux: false,
+            theme: Theme::dracula(),
+            search: search::Search::default(),
+        };
+        viewer.rebuild(&mut Vec::new(), 30).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let height = viewer.total() as u16;
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, height)).unwrap();
+        terminal.draw(|frame| viewer.draw(frame)).unwrap();
+        let row = |y: u32| {
+            (0..30)
+                .map(|x| terminal.backend().buffer()[(x, y as u16)].symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        };
+        let titles: Vec<String> = viewer.headings.iter().map(|&y| row(y)).collect();
+        assert_eq!(titles, ["Top", "Code", "Table", "Last"], "rows {:?}", viewer.headings);
+
+        let h = viewer.headings.clone();
+        assert_eq!(viewer.heading(0, false), Some(h[1]), "`]` from the top skips the heading already there");
+        assert_eq!(viewer.heading(h[1], false), Some(h[2]));
+        assert_eq!(viewer.heading(h[2], true), Some(h[1]));
+        assert_eq!(viewer.heading(h[3], false), None, "no wrap-around at the end");
+        assert_eq!(viewer.heading(0, true), None, "none above the first");
     }
 }
