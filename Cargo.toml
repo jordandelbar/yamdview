@@ -3,6 +3,8 @@ name = "yamdview"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+description = "Terminal markdown viewer with mermaid diagram support"
+repository = "https://github.com/jordandelbar/yamdview"
 
 [dependencies]
 base64 = "0.23.1"
