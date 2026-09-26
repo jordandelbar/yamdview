@@ -251,7 +251,6 @@ impl Theme {
                 error: c(self.error),
                 warning: c(self.warning),
                 success: c(self.success),
-                ..HostThemeRoles::default()
             })
             .series_palette(
                 [self.accent, self.success, self.keyword, self.info, self.number, self.note, self.error].map(css),

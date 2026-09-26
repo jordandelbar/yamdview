@@ -56,7 +56,7 @@ fn png_size(png: &[u8]) -> (u32, u32) {
 
 enum Block {
     // u16 height: ratatui scrolls a Paragraph by u16 rows, see `paragraphs`.
-    Text(Paragraph<'static>, u16),
+    Text(Box<Paragraph<'static>>, u16),
     Image { id: u32, cols: u16, rows: u16 },
 }
 
@@ -146,7 +146,7 @@ impl Viewer {
                 },
             };
             for (p, h) in paragraphs(text, width) {
-                self.blocks.push(Block::Text(p, h));
+                self.blocks.push(Block::Text(Box::new(p), h));
             }
         }
         if self.search.editing || !self.search.query.is_empty() {
@@ -188,7 +188,7 @@ impl Viewer {
                 let rows = (y + h).min(i64::from(area.height)) as u16 - top;
                 match block {
                     Block::Text(p, _) => {
-                        frame.render_widget(p.clone().scroll((skip, 0)), Rect::new(0, top, area.width, rows));
+                        frame.render_widget(Paragraph::clone(p).scroll((skip, 0)), Rect::new(0, top, area.width, rows));
                     }
                     // Placeholders make scrolling free: each cell names its own image row.
                     Block::Image { id, cols, rows: img_rows } => {
@@ -409,7 +409,7 @@ mod tests {
             path: PathBuf::new(), mtime: None, ids: Vec::new(),
             blocks: vec![
                 Block::Image { id: 1, cols: 2, rows: 3 },
-                Block::Text(Paragraph::new("target target"), 1),
+                Block::Text(Box::new(Paragraph::new("target target")), 1),
             ],
             scroll: 3, tmux: false, theme: Theme::dracula(),
             search: search::Search::default(),
