@@ -1,4 +1,6 @@
 mod diacritics;
+mod search;
+mod selection;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use diacritics::DIACRITICS;
@@ -6,7 +8,7 @@ use yamdview::{Chunk, Theme, diagram, markdown, split};
 use ratatui::{
     Frame,
     crossterm::{
-        event::{self, DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind},
+        event::{self, DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind},
         execute,
         terminal::window_size,
     },
@@ -61,7 +63,7 @@ impl Block {
     fn height(&self) -> u16 {
         match self {
             Block::Text(_, h) => *h,
-            Block::Image { rows, .. } => rows + 1, // one blank row below each diagram
+            Block::Image { rows, .. } => rows.saturating_add(1), // one blank row below each diagram
         }
     }
 }
@@ -74,6 +76,7 @@ struct Viewer {
     scroll: u16,
     tmux: bool,
     theme: Theme,
+    search: search::Search,
 }
 
 impl Viewer {
@@ -120,7 +123,20 @@ impl Viewer {
             let h = p.line_count(width) as u16;
             self.blocks.push(Block::Text(p, h));
         }
+        self.update_search(width);
         out.flush()
+    }
+
+    fn update_search(&mut self, width: u16) {
+        self.search.hits.clear();
+        self.search.current = None;
+        let mut offset = 0u16;
+        for block in &self.blocks {
+            if let Block::Text(p, h) = block {
+                self.search.index(p, width, *h, offset);
+            }
+            offset = offset.saturating_add(block.height());
+        }
     }
 
     fn total(&self) -> u16 {
@@ -128,7 +144,9 @@ impl Viewer {
     }
 
     fn draw(&self, frame: &mut Frame) {
-        let area = frame.area();
+        let full = frame.area();
+        let status = self.search.editing || !self.search.query.is_empty();
+        let area = Rect { height: full.height.saturating_sub(u16::from(status)), ..full };
         let mut y = -i32::from(self.scroll); // top of the current block, relative to the screen
         for block in &self.blocks {
             let h = i32::from(block.height());
@@ -154,33 +172,75 @@ impl Viewer {
             }
             y += h;
         }
+        for (index, hit) in self.search.hits.iter().enumerate() {
+            if hit.row < self.scroll || hit.row - self.scroll >= area.height { continue; }
+            for x in hit.start..hit.end.min(area.width) {
+                let cell = &mut frame.buffer_mut()[(x, hit.row - self.scroll)];
+                cell.set_bg(yamdview::theme::color(self.theme.selection));
+                if self.search.current == Some(index) {
+                    cell.set_fg(yamdview::theme::color(self.theme.accent));
+                }
+            }
+        }
+        if status && full.height > 0 {
+            let count = if self.search.hits.is_empty() {
+                "no matches".to_string()
+            } else {
+                format!("{}/{}", self.search.current.map_or(0, |i| i + 1), self.search.hits.len())
+            };
+            let prompt = format!("/{}  [{}]", self.search.query, count);
+            frame.render_widget(Paragraph::new(prompt), Rect::new(0, full.height - 1, full.width, 1));
+        }
     }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let path = PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| "README.md".into()));
+    let tmux = std::env::var_os("TMUX").is_some();
+    let mut mouse = true;
+    let mut path = None;
+    let mut positional = false;
+    for arg in std::env::args_os().skip(1) {
+        if !positional && arg == "--" { positional = true; }
+        else if !positional && arg == "--mouse" { mouse = true; }
+        else if !positional && arg == "--no-mouse" { mouse = false; }
+        else if !positional && arg.to_string_lossy().starts_with('-') {
+            return Err(format!("unknown option: {}", arg.to_string_lossy()).into());
+        }
+        else if path.is_none() { path = Some(PathBuf::from(arg)); }
+        else { return Err("usage: yamdview [--mouse|--no-mouse] [--] [FILE]".into()); }
+    }
+    let path = path.unwrap_or_else(|| PathBuf::from("README.md"));
     let mut v = Viewer {
         path,
         mtime: None,
         blocks: Vec::new(),
         ids: Vec::new(),
         scroll: 0,
-        tmux: std::env::var_os("TMUX").is_some(),
+        tmux,
         theme: Theme::detect(),
+        search: search::Search::default(),
     };
     let mut terminal = ratatui::init();
-    execute!(std::io::stdout(), EnableMouseCapture)?;
+
     let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        if mouse { execute!(std::io::stdout(), EnableMouseCapture)?; }
+        let mut selection = selection::Selection::default();
         let (mut dirty, mut repaint) = (true, false);
         loop {
             let size = terminal.size()?;
             if dirty {
+                selection.clear();
                 v.rebuild(terminal.backend_mut(), size.width)?;
                 terminal.clear()?;
                 (dirty, repaint) = (false, true);
             }
-            let (page, max) = (size.height.saturating_sub(2), v.total().saturating_sub(size.height));
-            terminal.draw(|f| v.draw(f))?;
+            let height = size.height.saturating_sub(u16::from(v.search.editing || !v.search.query.is_empty()));
+            let (page, max) = (height.saturating_sub(2), v.total().saturating_sub(height));
+            v.scroll = v.scroll.min(max);
+            let rendered = terminal.draw(|f| {
+                v.draw(f);
+                selection.highlight(f.buffer_mut(), yamdview::theme::color(v.theme.selection));
+            })?.buffer.clone();
             // Ghostty <= 1.3.1 loses the placeholders' row diacritics when they arrive as
             // incremental tmux pane updates, so every row shows image row 0. A full client
             // repaint fixes it, but tmux reads our output asynchronously: repainting right
@@ -199,15 +259,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let s = v.scroll;
                 v.scroll = match event::read()? {
                     event::Event::Key(k) if k.kind == KeyEventKind::Press => {
+                        selection.clear();
                         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+                        if v.search.editing && !(ctrl && k.code == KeyCode::Char('c')) {
+                            match k.code {
+                                KeyCode::Enter => v.search.editing = false,
+                                KeyCode::Esc => {
+                                    v.search.editing = false;
+                                    v.search.query.clear();
+                                }
+                                KeyCode::Backspace => { v.search.query.pop(); }
+                                KeyCode::Char(c) if !ctrl && !k.modifiers.contains(KeyModifiers::ALT) => v.search.query.push(c),
+                                _ => {}
+                            }
+                            if k.code != KeyCode::Enter {
+                                v.update_search(size.width);
+                                v.scroll = v.search.jump(s, false).unwrap_or(s);
+                            }
+                            repaint = true;
+                            continue;
+                        }
                         match k.code {
+                            KeyCode::Char('/') => {
+                                repaint = true;
+                                v.search.editing = true;
+                                v.search.query.clear();
+                                v.update_search(size.width);
+                                s
+                            }
+                            KeyCode::Char('n') => v.search.jump(s, false).unwrap_or(s),
+                            KeyCode::Char('N') => v.search.jump(s, true).unwrap_or(s),
+                            KeyCode::Esc if !v.search.query.is_empty() => {
+                                repaint = true;
+                                v.search.query.clear();
+                                v.update_search(size.width);
+                                s
+                            }
                             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                             KeyCode::Char('c') if ctrl => return Ok(()),
-                            KeyCode::Char('d') if ctrl => s + page / 2,
+                            KeyCode::Char('d') if ctrl => s.saturating_add(page / 2),
                             KeyCode::Char('u') if ctrl => s.saturating_sub(page / 2),
-                            KeyCode::Char('j') | KeyCode::Down => s + 1,
+                            KeyCode::Char('j') | KeyCode::Down => s.saturating_add(1),
                             KeyCode::Char('k') | KeyCode::Up => s.saturating_sub(1),
-                            KeyCode::Char(' ') | KeyCode::PageDown => s + page,
+                            KeyCode::Char(' ') | KeyCode::PageDown => s.saturating_add(page),
                             KeyCode::Char('b') | KeyCode::PageUp => s.saturating_sub(page),
                             KeyCode::Char('g') | KeyCode::Home => 0,
                             KeyCode::Char('G') | KeyCode::End => max,
@@ -215,8 +309,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     event::Event::Mouse(m) => match m.kind {
-                        MouseEventKind::ScrollDown => s + 3,
-                        MouseEventKind::ScrollUp => s.saturating_sub(3),
+                        MouseEventKind::ScrollDown => {
+                            selection.clear();
+                            s.saturating_add(3)
+                        }
+                        MouseEventKind::ScrollUp => {
+                            selection.clear();
+                            s.saturating_sub(3)
+                        }
+                        MouseEventKind::Down(MouseButton::Left) if v.tmux => {
+                            selection.start(m.column, m.row);
+                            repaint = true;
+                            s
+                        }
+                        MouseEventKind::Drag(MouseButton::Left) if v.tmux => {
+                            selection.drag(m.column, m.row);
+                            repaint = true;
+                            s
+                        }
+                        MouseEventKind::Up(MouseButton::Left) if v.tmux => {
+                            selection.drag(m.column, m.row);
+                            selection::copy_to_tmux(&selection.text(&rendered))?;
+                            selection.clear();
+                            repaint = true;
+                            s
+                        }
                         _ => s,
                     },
                     event::Event::Resize(..) => {
@@ -249,5 +366,31 @@ mod tests {
     fn placeholder_is_one_cell_wide() {
         // ratatui lays cells out by display width; anything but 1 would shear the image.
         assert_eq!(Line::from(placeholder(3, 7)).width(), 1);
+    }
+
+    #[test]
+    fn search_skips_images_and_highlights_text_above_status() {
+        let mut viewer = Viewer {
+            path: PathBuf::new(), mtime: None, ids: Vec::new(),
+            blocks: vec![
+                Block::Image { id: 1, cols: 2, rows: 3 },
+                Block::Text(Paragraph::new("target target"), 1),
+            ],
+            scroll: 3, tmux: false, theme: Theme::dracula(),
+            search: search::Search { query: "target".into(), ..Default::default() },
+        };
+        viewer.update_search(20);
+        assert_eq!(viewer.search.hits.len(), 2);
+        assert_eq!(viewer.search.jump(0, false), Some(4));
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 3)).unwrap();
+        terminal.draw(|frame| viewer.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 1)].symbol(), "t");
+        assert_eq!(buffer[(0, 1)].bg, yamdview::theme::color(viewer.theme.selection));
+        assert_eq!(buffer[(0, 2)].symbol(), "/");
+        viewer.search.query.clear();
+        viewer.update_search(10);
+        assert!(viewer.search.hits.is_empty());
+        assert_eq!(viewer.search.current, None);
     }
 }

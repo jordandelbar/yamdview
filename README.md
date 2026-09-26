@@ -19,7 +19,29 @@ line per role (`background`, `foreground`, `selection`, `muted`, `heading`,
 they come from Ghostty (`ghostty +show-config`), else Dracula.
 
 Keys: `j`/`k` or arrows, `space`/`b` page, `ctrl-d`/`ctrl-u` half page,
-`g`/`G` top/bottom, mouse wheel, `q` to quit.
+`g`/`G` top/bottom, `q` to quit.
+
+Search: `/` opens a prompt and searches as you type. `Enter` keeps the search,
+`n`/`N` jump to the next/previous match (wrapping at the ends), and `Esc`
+clears it. Matches are highlighted, with a match counter on the bottom line.
+Search is literal and case-sensitive, within each displayed line of text;
+diagram images are not searchable.
+
+The mouse wheel scrolls the document, including inside tmux. In tmux, drag
+with the left button to highlight visible text; releasing copies it to tmux's
+paste buffer without entering copy mode. Paste with tmux's usual `prefix ]`.
+The viewer also asks tmux to forward the text to the terminal clipboard;
+clipboard support depends on your terminal and tmux configuration. Diagram
+image placeholders are excluded from copied text. Scrolling, typing, resizing,
+or reloading clears the selection.
+
+Enable tmux mouse support with `set -g mouse on` in `~/.tmux.conf`.
+No custom mouse bindings are needed with tmux's default bindings.
+See [tmux mouse support](https://github.com/tmux/tmux/wiki/Getting-Started#using-the-mouse).
+
+Mouse capture is enabled by default; `yamdview --no-mouse FILE.md` disables
+it, and `--mouse` explicitly enables it. Outside tmux, use your terminal's
+selection modifier (usually Shift) while dragging to copy text.
 
 ## How it works
 
