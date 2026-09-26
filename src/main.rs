@@ -6,18 +6,21 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use diacritics::DIACRITICS;
 use ratatui::{
     Frame,
+    backend::IntoCrossterm,
+    buffer::Buffer,
     crossterm::{
         event::{
             self, DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEventKind, KeyModifiers,
             MouseButton, MouseEventKind,
         },
-        execute,
+        execute, queue,
+        style::PrintStyledContent,
         terminal::window_size,
     },
     layout::Rect,
-    style::{Color, Stylize},
-    text::{Line, Text},
-    widgets::{Paragraph, Wrap},
+    style::{Color, Style, Stylize},
+    text::{Line, Span, Text},
+    widgets::{Paragraph, Widget, Wrap},
 };
 use std::{
     io::{IsTerminal, Read, Write},
@@ -67,6 +70,47 @@ fn upload(
 }
 
 /// Placeholder cell for image row `r`, column `c`. Its fg color carries the image id.
+/// Image `id`'s placeholder cells for image rows `rows`, the first drawn at buffer row `top`.
+fn image_cells(buf: &mut Buffer, id: u32, cols: u16, rows: std::ops::Range<u16>, top: u16) {
+    let fg = Color::Rgb((id >> 16) as u8, (id >> 8) as u8, id as u8);
+    let first = rows.start;
+    for r in rows {
+        for c in 0..cols.min(buf.area.width) {
+            buf[(c, top + r - first)]
+                .set_symbol(&placeholder(r.into(), c.into()))
+                .set_fg(fg);
+        }
+    }
+}
+
+/// One buffer row as a line of output: plain text, or styled runs of cells.
+/// Trailing blank cells are dropped; a wide character's covered cells are skipped.
+fn print_row(out: &mut impl Write, buf: &Buffer, y: u16, styled: bool) -> std::io::Result<()> {
+    let mut cells = Vec::new();
+    let mut x = 0;
+    while x < buf.area.width {
+        let cell = &buf[(x, y)];
+        x += (Span::raw(cell.symbol()).width() as u16).max(1);
+        cells.push((cell.symbol(), cell.style()));
+    }
+    let blank = |(symbol, style): &(&str, Style)| *symbol == " " && style.bg.is_none_or(|bg| bg == Color::Reset);
+    let end = cells.iter().rposition(|c| !blank(c)).map_or(0, |i| i + 1);
+    let mut cells = cells[..end].iter().peekable();
+    while let Some(&(symbol, style)) = cells.next() {
+        let mut run = symbol.to_string();
+        while let Some(&&(next, _)) = cells.peek().filter(|(_, s)| *s == style) {
+            run.push_str(next);
+            cells.next();
+        }
+        if styled {
+            queue!(out, PrintStyledContent(style.into_crossterm().apply(run)))?;
+        } else {
+            out.write_all(run.as_bytes())?;
+        }
+    }
+    out.write_all(b"\n")
+}
+
 fn placeholder(r: usize, c: usize) -> String {
     format!("\u{10EEEE}{}{}", DIACRITICS[r], DIACRITICS[c])
 }
@@ -272,6 +316,25 @@ impl Viewer {
         }
     }
 
+    /// Render the whole document once to `out`, for pipes, files and tmux's history:
+    /// `styled` keeps colors, attributes and diagrams (as placeholders), else plain text.
+    fn print(&mut self, out: &mut impl Write, width: u16, styled: bool) -> std::io::Result<()> {
+        self.rebuild(out, width)?;
+        for block in &self.blocks {
+            // Text blocks stay under u16 rows, and images under DIACRITICS.len() + 1.
+            let area = Rect::new(0, 0, width, block.height() as u16);
+            let mut buf = Buffer::empty(area);
+            match block {
+                Block::Text(p, _) => Paragraph::clone(p).render(area, &mut buf),
+                Block::Image { id, cols, rows } => image_cells(&mut buf, *id, *cols, 0..*rows, 0),
+            }
+            for y in 0..area.height {
+                print_row(out, &buf, y, styled)?;
+            }
+        }
+        out.flush()
+    }
+
     fn total(&self) -> u32 {
         self.blocks.iter().map(Block::height).sum()
     }
@@ -304,15 +367,8 @@ impl Viewer {
                         cols,
                         rows: img_rows,
                     } => {
-                        let fg = Color::Rgb((id >> 16) as u8, (id >> 8) as u8, *id as u8);
-                        let buf = frame.buffer_mut();
-                        for r in skip..(skip + rows).min(*img_rows) {
-                            for c in 0..(*cols).min(area.width) {
-                                buf[(c, top + r - skip)]
-                                    .set_symbol(&placeholder(r.into(), c.into()))
-                                    .set_fg(fg);
-                            }
-                        }
+                        let rows = skip..(skip + rows).min(*img_rows);
+                        image_cells(frame.buffer_mut(), *id, (*cols).min(area.width), rows, top);
                     }
                 }
             }
@@ -372,6 +428,7 @@ fn supports_images(var: impl Fn(&str) -> Option<String>, tmux_client: Option<Str
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tmux = std::env::var_os("TMUX").is_some();
     let mut images = None;
+    let mut print = false;
     let mut mouse = true;
     let mut path = None;
     let mut read_stdin = false;
@@ -385,6 +442,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             mouse = false;
         } else if !positional && arg == "--images" {
             images = Some(true);
+        } else if !positional && (arg == "--print" || arg == "-p") {
+            print = true;
         } else if !positional && arg == "--no-images" {
             images = Some(false);
         } else if !positional && arg == "-" && path.is_none() && !read_stdin {
@@ -395,7 +454,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             path = Some(PathBuf::from(arg));
         } else {
             return Err(
-                "usage: yamdview [--mouse|--no-mouse] [--images|--no-images] [--] [FILE | -]".into(),
+                "usage: yamdview [-p|--print] [--mouse|--no-mouse] [--images|--no-images] [--] [FILE | -]"
+                    .into(),
             );
         }
     }
@@ -437,6 +497,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         theme: Theme::detect(),
         search: search::Search::default(),
     };
+    // Print instead of opening the viewer: styled with --print (for the terminal, and so
+    // tmux's history), plain whenever stdout isn't a terminal (a pipe or a file).
+    let terminal_out = std::io::stdout().is_terminal();
+    if print || !terminal_out {
+        v.images &= print && terminal_out;
+        let width = ratatui::crossterm::terminal::size().map_or(80, |(w, _)| w);
+        match v.print(&mut std::io::stdout().lock(), width, print) {
+            // The reader stopped early (`| head`): that's not an error.
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => return Ok(()),
+            result => result?,
+        }
+        if v.tmux && v.images {
+            // Same Ghostty-in-tmux repaint as the viewer's; best effort, output discarded.
+            let _ = Command::new("tmux").arg("refresh-client").output();
+        }
+        return Ok(());
+    }
     let mut terminal = ratatui::init();
 
     let result = (|| -> Result<(), Box<dyn std::error::Error>> {
@@ -919,5 +996,49 @@ mod tests {
             .collect();
         assert!(rows.iter().any(|r| r.starts_with("╭─ mermaid")), "{rows:#?}");
         assert!(rows.iter().any(|r| r.contains("A-->B")), "{rows:#?}");
+    }
+
+    fn printed(md: &str, images: bool, styled: bool) -> String {
+        let mut viewer = Viewer {
+            path: PathBuf::from("-"),
+            stdin: Some(md.into()),
+            headings: Vec::new(),
+            mtime: None,
+            blocks: Vec::new(),
+            ids: Vec::new(),
+            scroll: 0,
+            tmux: false,
+            images,
+            theme: Theme::dracula(),
+            search: search::Search::default(),
+        };
+        let mut out = Vec::new();
+        viewer.print(&mut out, 40, styled).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn prints_plain_text_for_pipes() {
+        let out = printed("# Title\n\n- [x] done\n\n猫 wide\n\n```sh\nls\n```\n", false, false);
+        assert!(!out.contains('\x1b'), "no escape codes: {out:?}");
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[0], "Title");
+        assert!(lines.contains(&"[✓] done"), "{lines:#?}");
+        assert!(lines.contains(&"猫 wide"), "wide characters print once: {lines:#?}");
+        assert!(lines.iter().any(|l| l.starts_with("╭─ sh")), "{lines:#?}");
+        assert!(lines.iter().all(|l| !l.ends_with(' ')), "trailing blanks trimmed: {lines:#?}");
+    }
+
+    #[test]
+    fn prints_styles_and_diagrams_for_the_terminal() {
+        let styled = printed("# Title\n\ntext\n", false, true);
+        assert!(styled.contains("\x1b[") && styled.contains("Title"), "{styled:?}");
+
+        let md = "Intro.\n\n```mermaid\ngraph TD\n  A-->B\n```\n";
+        let with_images = printed(md, true, true);
+        assert!(with_images.contains("\x1b_G"), "the diagram is uploaded");
+        assert!(with_images.contains('\u{10EEEE}'), "and printed as placeholder cells");
+        let without = printed(md, false, false);
+        assert!(!without.contains('\u{10EEEE}') && without.contains("A-->B"), "{without}");
     }
 }

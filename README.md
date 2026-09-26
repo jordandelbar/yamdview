@@ -101,6 +101,9 @@ yamdview examples/showcase.md    # or: cargo run -- examples/showcase.md
 
 It reads from a pipe too: `gh pr view 12 | yamdview`.
 
+`yamdview --print notes.md` prints the whole document, diagrams included,
+so you can scroll and copy it with tmux copy mode.
+
 With no file, it opens `README.md`. [docs/usage.md](docs/usage.md) covers
 keys, search, mouse selection, tmux setup and themes.
 
