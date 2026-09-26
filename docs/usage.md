@@ -15,11 +15,18 @@ gh pr view 12 | yamdview
 curl -s https://raw.githubusercontent.com/jordandelbar/yamdview/main/README.md | yamdview
 ```
 
-| Option       | Effect                                                           |
-| ------------ | ---------------------------------------------------------------- |
-| `--mouse`    | Capture the mouse. This is the default.                          |
-| `--no-mouse` | Leave the mouse to the terminal, for its own selection behavior. |
-| `--`         | Treat the next argument as the file, even if it starts with `-`. |
+| Option        | Effect                                                            |
+| ------------- | ----------------------------------------------------------------- |
+| `--mouse`     | Capture the mouse. This is the default.                           |
+| `--no-mouse`  | Leave the mouse to the terminal, for its own selection behavior.  |
+| `--images`    | Draw diagrams as images, even if the terminal isn't detected.     |
+| `--no-images` | Show diagrams as their mermaid source.                            |
+| `--`          | Treat the next argument as the file, even if it starts with `-`.  |
+
+Diagrams are drawn as images in Ghostty and kitty, which support kitty's
+Unicode image placeholders. yamdview recognizes them from the environment, or
+inside tmux from the client terminal tmux reports. Anywhere else, it shows the
+diagram source in a box. If it guesses wrong, use `--images` or `--no-images`.
 
 ## Keys
 
