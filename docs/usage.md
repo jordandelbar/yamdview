@@ -1,11 +1,19 @@
 # Using yamdview
 
 ```sh
-yamdview [--mouse | --no-mouse] [--] [FILE]
+yamdview [--mouse | --no-mouse] [--] [FILE | -]
 ```
 
 `FILE` defaults to `README.md`. yamdview redraws when the file is saved and
 when the terminal is resized.
+
+It also reads markdown from stdin, with `-` or when you pipe something in
+without naming a file:
+
+```sh
+gh pr view 12 | yamdview
+curl -s https://raw.githubusercontent.com/jordandelbar/yamdview/main/README.md | yamdview
+```
 
 | Option       | Effect                                                           |
 | ------------ | ---------------------------------------------------------------- |
@@ -15,20 +23,20 @@ when the terminal is resized.
 
 ## Keys
 
-| Key                 | Action                                   |
-| ------------------- | ---------------------------------------- |
-| `j`, `Down`         | Scroll down one line                     |
-| `k`, `Up`           | Scroll up one line                       |
-| `space`, `PageDown` | Page down                                |
-| `b`, `PageUp`       | Page up                                  |
-| `ctrl-d`, `ctrl-u`  | Half a page down, up                     |
-| `g`, `Home`         | Go to the top                            |
-| `G`, `End`          | Go to the bottom                         |
-| `/`                 | Start a search                           |
-| `n`, `N`            | Next, previous match                     |
+| Key                 | Action                                       |
+| ------------------- | -------------------------------------------- |
+| `j`, `Down`         | Scroll down one line                         |
+| `k`, `Up`           | Scroll up one line                           |
+| `space`, `PageDown` | Page down                                    |
+| `b`, `PageUp`       | Page up                                      |
+| `ctrl-d`, `ctrl-u`  | Half a page down, up                         |
+| `g`, `Home`         | Go to the top                                |
+| `G`, `End`          | Go to the bottom                             |
+| `/`                 | Start a search                               |
+| `n`, `N`            | Next, previous match                         |
 | `Esc`               | Clear the search, or quit if there isn't one |
-| `q`, `ctrl-c`       | Quit                                     |
-| Mouse wheel         | Scroll three lines                       |
+| `q`, `ctrl-c`       | Quit                                         |
+| Mouse wheel         | Scroll three lines                           |
 
 ## Search
 
@@ -83,13 +91,13 @@ The theme file has one `role = #rrggbb` line per role, and every role is
 required. An optional `font-family = Name` line sets the font used in
 diagrams.
 
-| Roles                                                                     | Used for                                          |
-| ------------------------------------------------------------------------- | ------------------------------------------------- |
-| `background`, `foreground`                                                | Page background and body text                     |
-| `selection`                                                               | Search matches and mouse selection                |
-| `muted`                                                                   | Rules, table borders, metadata                    |
-| `heading`, `bold`, `italic`, `code`, `link`, `quote`                      | Markdown text (`code` is inline code)             |
-| `comment`, `keyword`, `string`, `function`, `type`, `number`, `parameter` | Syntax highlighting in code blocks                |
-| `accent`                                                                  | Diagram borders and node tint, the current match, `[!IMPORTANT]` alerts |
-| `note`                                                                    | Diagram notes                                     |
+| Roles                                                                     | Used for                                                                               |
+| ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `background`, `foreground`                                                | Page background and body text                                                          |
+| `selection`                                                               | Search matches and mouse selection                                                     |
+| `muted`                                                                   | Rules, table borders, metadata                                                         |
+| `heading`, `bold`, `italic`, `code`, `link`, `quote`                      | Markdown text (`code` is inline code)                                                  |
+| `comment`, `keyword`, `string`, `function`, `type`, `number`, `parameter` | Syntax highlighting in code blocks                                                     |
+| `accent`                                                                  | Diagram borders and node tint, the current match, `[!IMPORTANT]` alerts                |
+| `note`                                                                    | Diagram notes                                                                          |
 | `info`, `success`, `warning`, `error`                                     | The other alerts (`[!NOTE]`, `[!TIP]`, `[!WARNING]`, `[!CAUTION]`), and diagram colors |
