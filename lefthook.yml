@@ -15,3 +15,5 @@ pre-push:
     end-of-file:
       file_types: text
       run: end-of-file-fixer {all_files}
+    large-files:
+      run: check-added-large-files --enforce-all --maxkb=1024 {all_files}
