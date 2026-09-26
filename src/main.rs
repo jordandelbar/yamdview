@@ -22,7 +22,7 @@ use ratatui::{
 use std::{
     io::{IsTerminal, Read, Write},
     path::PathBuf,
-    process::Command,
+    process::{Command, Stdio},
     time::{Duration, SystemTime},
 };
 use yamdview::{Chunk, Theme, boxed, diagram, is_heading, markdown, split};
@@ -479,7 +479,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let timeout = Duration::from_millis(if settle { 50 } else { 250 });
             if !event::poll(timeout)? {
                 if settle {
-                    Command::new("tmux").arg("refresh-client").status()?;
+                    // Best effort and silent: with no client attached (a detached
+                    // session), tmux's error would land on our screen and shift it.
+                    let _ = Command::new("tmux")
+                        .arg("refresh-client")
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status();
                     repaint = false;
                 }
             } else {
