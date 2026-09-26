@@ -8,8 +8,8 @@ A terminal markdown viewer that draws mermaid diagrams as images.
 
 It redraws whenever the file is saved, so it fits in a split next to your
 editor. [merman](https://github.com/Latias94/merman) renders the diagrams
-locally, and the kitty graphics protocol puts them on screen, so you need
-Ghostty, kitty or WezTerm.
+locally, and the kitty graphics protocol puts them on screen in Ghostty or
+kitty. In other terminals, diagrams show as their mermaid source instead.
 
 ## Why another markdown viewer
 

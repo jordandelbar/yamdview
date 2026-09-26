@@ -151,6 +151,8 @@ struct Viewer {
     ids: Vec<u32>,
     scroll: u32,
     tmux: bool,
+    /// Draw diagrams as images; without kitty graphics they show as boxed source.
+    images: bool,
     theme: Theme,
     search: search::Search,
 }
@@ -188,6 +190,14 @@ impl Viewer {
             if matches!(chunk, Chunk::Text(t) if t.trim().is_empty()) {
                 continue;
             }
+            let chunk = match chunk {
+                Chunk::Mermaid { raw, .. } if !self.images => Chunk::Boxed {
+                    md: raw.to_string(),
+                    title: "mermaid".to_string(),
+                    alert: None,
+                },
+                chunk => chunk,
+            };
             // Boxes carry a blank line on each side; two in a row share one.
             let prev_box = std::mem::replace(&mut after_box, matches!(chunk, Chunk::Boxed { .. }));
             let text = match chunk {
@@ -344,8 +354,24 @@ impl Viewer {
     }
 }
 
+/// Whether the terminal can show kitty images through Unicode placeholders: kitty and
+/// Ghostty. Inside tmux, `TERM` only says tmux, so `tmux_client` is the outer terminal
+/// as tmux reports it (`#{client_termname}`) and takes precedence over the environment.
+/// ponytail: a heuristic, not a query; `--images` / `--no-images` override it.
+fn supports_images(var: impl Fn(&str) -> Option<String>, tmux_client: Option<String>) -> bool {
+    let graphics = |term: &str| term.contains("kitty") || term.contains("ghostty");
+    if let Some(term) = tmux_client {
+        return graphics(&term);
+    }
+    var("TERM").is_some_and(|t| graphics(&t))
+        || var("TERM_PROGRAM").is_some_and(|p| p.eq_ignore_ascii_case("ghostty"))
+        || var("KITTY_WINDOW_ID").is_some()
+        || var("GHOSTTY_RESOURCES_DIR").is_some()
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tmux = std::env::var_os("TMUX").is_some();
+    let mut images = None;
     let mut mouse = true;
     let mut path = None;
     let mut read_stdin = false;
@@ -357,6 +383,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             mouse = true;
         } else if !positional && arg == "--no-mouse" {
             mouse = false;
+        } else if !positional && arg == "--images" {
+            images = Some(true);
+        } else if !positional && arg == "--no-images" {
+            images = Some(false);
         } else if !positional && arg == "-" && path.is_none() && !read_stdin {
             read_stdin = true;
         } else if !positional && arg.to_string_lossy().starts_with('-') && arg != "-" {
@@ -364,7 +394,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else if path.is_none() && !read_stdin {
             path = Some(PathBuf::from(arg));
         } else {
-            return Err("usage: yamdview [--mouse|--no-mouse] [--] [FILE | -]".into());
+            return Err(
+                "usage: yamdview [--mouse|--no-mouse] [--images|--no-images] [--] [FILE | -]".into(),
+            );
         }
     }
     // `-`, or a pipe with no file given: read stdin now, before the TUI takes over.
@@ -378,6 +410,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let path =
         path.unwrap_or_else(|| PathBuf::from(if stdin.is_some() { "-" } else { "README.md" }));
+    let images = images.unwrap_or_else(|| {
+        let tmux_client = tmux
+            .then(|| {
+                Command::new("tmux")
+                    .args(["display-message", "-p", "#{client_termname}"])
+                    .output()
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .filter(|t| !t.is_empty())
+            })
+            .flatten();
+        supports_images(|k| std::env::var(k).ok(), tmux_client)
+    });
     let mut v = Viewer {
         path,
         stdin,
@@ -387,6 +433,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ids: Vec::new(),
         scroll: 0,
         tmux,
+        images,
         theme: Theme::detect(),
         search: search::Search::default(),
     };
@@ -591,6 +638,7 @@ mod tests {
             ],
             scroll: 3,
             tmux: false,
+            images: true,
             theme: Theme::dracula(),
             search: search::Search::default(),
         };
@@ -629,6 +677,7 @@ mod tests {
             blocks: Vec::new(),
             scroll: 0,
             tmux: false,
+            images: true,
             theme: Theme::dracula(),
             search: search::Search::default(),
         };
@@ -689,6 +738,7 @@ mod tests {
             blocks: Vec::new(),
             scroll: 0,
             tmux: false,
+            images: true,
             theme: Theme::dracula(),
             search: search::Search::default(),
         };
@@ -738,6 +788,7 @@ mod tests {
             blocks: Vec::new(),
             scroll: 0,
             tmux: false,
+            images: true,
             theme: Theme::dracula(),
             search: search::Search::default(),
         };
@@ -779,6 +830,7 @@ mod tests {
             blocks: Vec::new(),
             scroll: 0,
             tmux: false,
+            images: true,
             theme: Theme::dracula(),
             search: search::Search::default(),
         };
@@ -804,5 +856,68 @@ mod tests {
         assert_eq!(viewer.heading(h[2], true), Some(h[1]));
         assert_eq!(viewer.heading(h[3], false), None, "no wrap-around at the end");
         assert_eq!(viewer.heading(0, true), None, "none above the first");
+    }
+
+    #[test]
+    fn detects_terminals_with_kitty_image_placeholders() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| pairs.iter().find(|(key, _)| *key == k).map(|(_, v)| v.to_string())
+        };
+        // (environment, tmux client terminal, expected)
+        type Case = (&'static [(&'static str, &'static str)], Option<&'static str>, bool);
+        let cases: [Case; 8] = [
+            (&[("TERM", "xterm-kitty")], None, true),
+            (&[("TERM", "xterm-ghostty")], None, true),
+            (&[("TERM", "xterm-256color"), ("TERM_PROGRAM", "ghostty")], None, true),
+            (&[("TERM", "xterm-256color"), ("KITTY_WINDOW_ID", "1")], None, true),
+            (&[("TERM", "xterm-256color")], None, false),
+            (&[("TERM", "alacritty")], None, false),
+            // Inside tmux, the client terminal as tmux reports it decides.
+            (&[("TERM", "tmux-256color"), ("TERM_PROGRAM", "tmux")], Some("xterm-ghostty"), true),
+            (&[("TERM", "tmux-256color"), ("GHOSTTY_RESOURCES_DIR", "/x")], Some("xterm-256color"), false),
+        ];
+        for (vars, client, expected) in cases {
+            let got = supports_images(env(vars), client.map(str::to_string));
+            assert_eq!(got, expected, "{vars:?} tmux client {client:?}");
+        }
+    }
+
+    #[test]
+    fn without_images_diagrams_show_as_boxed_source() {
+        let path = std::env::temp_dir().join(format!("yamdview-noimg-{}.md", std::process::id()));
+        std::fs::write(&path, "Intro.\n\n```mermaid\ngraph TD\n  A-->B\n```\n\nOutro.\n").unwrap();
+        let mut viewer = Viewer {
+            path: path.clone(),
+            stdin: None,
+            headings: Vec::new(),
+            mtime: None,
+            ids: Vec::new(),
+            blocks: Vec::new(),
+            scroll: 0,
+            tmux: false,
+            images: false,
+            theme: Theme::dracula(),
+            search: search::Search::default(),
+        };
+        let mut out = Vec::new();
+        viewer.rebuild(&mut out, 40).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(out.is_empty(), "nothing sent to the terminal as an image");
+        assert!(viewer.blocks.iter().all(|b| matches!(b, Block::Text(..))));
+        let height = viewer.total() as u16;
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, height)).unwrap();
+        terminal.draw(|frame| viewer.draw(frame)).unwrap();
+        let rows: Vec<String> = (0..height)
+            .map(|y| {
+                (0..40)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect();
+        assert!(rows.iter().any(|r| r.starts_with("╭─ mermaid")), "{rows:#?}");
+        assert!(rows.iter().any(|r| r.contains("A-->B")), "{rows:#?}");
     }
 }
