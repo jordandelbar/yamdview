@@ -12,5 +12,7 @@ module.exports = {
     ],
     "subject-case": [2, "always", "sentence-case"],
   },
+  // Dependabot titles start with a lowercase "bump".
+  ignores: [(message) => message.startsWith("chore(deps): bump ")],
   plugins: [],
 };
