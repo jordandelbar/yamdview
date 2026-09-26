@@ -52,6 +52,12 @@ Mouse capture is enabled by default; `yamdview --no-mouse FILE.md` disables
 it, and `--mouse` explicitly enables it. Outside tmux, use your terminal's
 selection modifier (usually Shift) while dragging to copy text.
 
+## Development
+
+`nix develop` (or `direnv allow`, via `.envrc`) gives a shell with the Rust
+toolchain, lefthook and commitlint. Run `lefthook install` once to check commit
+messages against `commitlint.config.js`.
+
 ## How it works
 
 ```mermaid
