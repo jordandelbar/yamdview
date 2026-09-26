@@ -14,7 +14,7 @@ jobs:
       FROM: ${{ github.event.pull_request.base.sha || github.event.before }}
       TO: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: cachix/install-nix-action@v31
@@ -37,7 +37,7 @@ jobs:
     if: needs.hooks.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --locked
   build:
@@ -50,7 +50,7 @@ jobs:
           - { os: macos-latest, target: aarch64-apple-darwin }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
