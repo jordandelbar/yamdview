@@ -17,11 +17,11 @@ There are _many_ markdown viewers. I looked for one that is a real TUI, works
 inside tmux, and draws mermaid diagrams as actual images. I didn't find one, so
 I wrote yamdview.
 
-|                                            | Interactive TUI                                      | Live reload | Mermaid           | Inside tmux        |
-| ------------------------------------------ | ---------------------------------------------------- | ----------- | ----------------- | ------------------ |
-| [mdcat](https://github.com/BIRSAx2/mdcat)  | No, it prints; paging and `--watch` don't combine    | Yes         | Images            | Images don't show  |
-| [veol](https://github.com/guiwohl/veol)   | Yes                                                  | Yes         | ASCII art         | Yes                |
-| yamdview                                   | Yes                                                  | Yes         | Images            | Yes                |
+|                                           | Interactive TUI                                   | Live reload | Mermaid   | Inside tmux       |
+| ----------------------------------------- | ------------------------------------------------- | ----------- | --------- | ----------------- |
+| [mdcat](https://github.com/BIRSAx2/mdcat) | No, it prints; paging and `--watch` don't combine | Yes         | Images    | Images don't show |
+| [veol](https://github.com/guiwohl/veol)   | Yes                                               | Yes         | ASCII art | Yes               |
+| yamdview                                  | Yes                                               | Yes         | Images    | Yes               |
 
 ASCII diagrams are fine for small graphs, but they fall apart once a diagram
 grows. Images usually fail inside tmux because tmux doesn't know they're
@@ -98,6 +98,8 @@ element and diagram type:
 ```sh
 yamdview examples/showcase.md    # or: cargo run -- examples/showcase.md
 ```
+
+It reads from a pipe too: `gh pr view 12 | yamdview`.
 
 With no file, it opens `README.md`. [docs/usage.md](docs/usage.md) covers
 keys, search, mouse selection, tmux setup and themes.
