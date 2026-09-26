@@ -1,0 +1,57 @@
+name: release-please
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write # release-please creates its autorelease labels
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      created: ${{ steps.release.outputs.release_created }}
+      tag: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  binaries:
+    needs: release-please
+    if: needs.release-please.outputs.created == 'true'
+    strategy:
+      matrix:
+        include:
+          - {
+              os: ubuntu-latest,
+              target: x86_64-unknown-linux-musl,
+              asset: yamdview-x86_64-linux,
+            }
+          - {
+              os: macos-latest,
+              target: aarch64-apple-darwin,
+              asset: yamdview-aarch64-darwin,
+            }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp target/${{ matrix.target }}/release/yamdview ${{ matrix.asset }}
+          gh release upload ${{ needs.release-please.outputs.tag }} ${{ matrix.asset }} --clobber

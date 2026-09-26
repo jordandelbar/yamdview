@@ -7,7 +7,7 @@ on:
       - src/**
       - Cargo.toml
       - Cargo.lock
-      - .github/workflows/ci.yml
+      - .github/workflows/*.yml
   pull_request:
     paths: *code
 
@@ -21,3 +21,18 @@ jobs:
           components: clippy
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
+  build:
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --locked --target ${{ matrix.target }}

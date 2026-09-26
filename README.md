@@ -10,6 +10,9 @@ diagrams go through [merman](https://github.com/Latias94/merman).
 cargo run --release -- README.md
 ```
 
+Prebuilt binaries for Linux x86_64 (static) and macOS Apple silicon are attached
+to each [release](https://github.com/jordandelbar/yamdview/releases/latest).
+
 A live viewer: it re-renders when the file is saved or the pane is resized,
 so run it in a split next to your editor.
 
