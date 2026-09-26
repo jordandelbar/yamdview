@@ -12,3 +12,6 @@ merman = { version = "0.7.0", features = ["raster"] }
 pulldown-cmark = "0.13.4"
 ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
 tui-markdown = "0.3.9"
+
+[profile.release]
+strip = true
