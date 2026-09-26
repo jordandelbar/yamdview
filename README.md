@@ -24,6 +24,8 @@ Keys: `j`/`k` or arrows, `space`/`b` page, `ctrl-d`/`ctrl-u` half page,
 Search: `/` opens a prompt and searches as you type. `Enter` keeps the search,
 `n`/`N` jump to the next/previous match (wrapping at the ends), and `Esc`
 clears it. Matches are highlighted, with a match counter on the bottom line.
+While typing, `Esc` cancels and returns to where the search started. After
+scrolling, reloading, or resizing, `n`/`N` search beyond the current top row.
 Search is literal and case-sensitive, within each displayed line of text;
 diagram images are not searchable.
 

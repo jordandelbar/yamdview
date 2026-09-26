@@ -14,7 +14,7 @@ use ratatui::{
     },
     layout::Rect,
     style::{Color, Stylize},
-    text::Line,
+    text::{Line, Text},
     widgets::{Paragraph, Wrap},
 };
 use std::{io::Write, path::PathBuf, process::Command, time::{Duration, SystemTime}};
@@ -55,17 +55,42 @@ fn png_size(png: &[u8]) -> (u32, u32) {
 }
 
 enum Block {
+    // u16 height: ratatui scrolls a Paragraph by u16 rows, see `paragraphs`.
     Text(Paragraph<'static>, u16),
     Image { id: u32, cols: u16, rows: u16 },
 }
 
 impl Block {
-    fn height(&self) -> u16 {
+    fn height(&self) -> u32 {
         match self {
-            Block::Text(_, h) => *h,
-            Block::Image { rows, .. } => rows.saturating_add(1), // one blank row below each diagram
+            Block::Text(_, h) => u32::from(*h),
+            Block::Image { rows, .. } => u32::from(*rows) + 1, // one blank row below each diagram
         }
     }
+}
+
+/// Wrap `text` into paragraphs of about 1024 rows, split between source lines (wrapping
+/// is per line, so rows add up exactly). ratatui scrolls a Paragraph by u16 rows, and
+/// small blocks keep per-frame clones and search layout cheap.
+fn paragraphs(text: Text<'static>, width: u16) -> Vec<(Paragraph<'static>, u16)> {
+    let Text { lines, style, alignment } = text;
+    // ponytail: one source line wrapping past 65535 rows (~5 MB at 80 columns) is cut there.
+    let block = |lines, rows: usize| {
+        let p = Paragraph::new(Text { lines, style, alignment }).wrap(Wrap { trim: false });
+        (p, u16::try_from(rows).unwrap_or(u16::MAX))
+    };
+    let (mut out, mut chunk, mut rows) = (Vec::new(), Vec::new(), 0);
+    for line in lines {
+        let n = Paragraph::new(line.clone()).wrap(Wrap { trim: false }).line_count(width);
+        if rows + n > 1024 && !chunk.is_empty() {
+            out.push(block(std::mem::take(&mut chunk), rows));
+            rows = 0;
+        }
+        rows += n;
+        chunk.push(line);
+    }
+    out.push(block(chunk, rows));
+    out
 }
 
 struct Viewer {
@@ -73,7 +98,7 @@ struct Viewer {
     mtime: Option<SystemTime>,
     blocks: Vec<Block>,
     ids: Vec<u32>,
-    scroll: u16,
+    scroll: u32,
     tmux: bool,
     theme: Theme,
     search: search::Search,
@@ -96,6 +121,7 @@ impl Viewer {
         let max = DIACRITICS.len() as u32;
 
         self.blocks.clear();
+        self.search.clear_layout();
         for chunk in split(&md) {
             let text = match chunk {
                 Chunk::Text(t) => markdown(t, &self.theme),
@@ -119,27 +145,32 @@ impl Viewer {
                     }
                 },
             };
-            let p = Paragraph::new(text).wrap(Wrap { trim: false });
-            let h = p.line_count(width) as u16;
-            self.blocks.push(Block::Text(p, h));
+            for (p, h) in paragraphs(text, width) {
+                self.blocks.push(Block::Text(p, h));
+            }
         }
-        self.update_search(width);
+        if self.search.editing || !self.search.query.is_empty() {
+            self.cache_search(width);
+        }
+        self.search.refresh();
         out.flush()
     }
 
-    fn update_search(&mut self, width: u16) {
-        self.search.hits.clear();
-        self.search.current = None;
-        let mut offset = 0u16;
+    /// Lay out the text for search on first use; `rebuild` drops the cache.
+    fn cache_search(&mut self, width: u16) {
+        if self.search.cached() {
+            return;
+        }
+        let mut offset = 0;
         for block in &self.blocks {
             if let Block::Text(p, h) = block {
-                self.search.index(p, width, *h, offset);
+                self.search.cache(p, width, *h, offset);
             }
-            offset = offset.saturating_add(block.height());
+            offset += block.height();
         }
     }
 
-    fn total(&self) -> u16 {
+    fn total(&self) -> u32 {
         self.blocks.iter().map(Block::height).sum()
     }
 
@@ -147,13 +178,14 @@ impl Viewer {
         let full = frame.area();
         let status = self.search.editing || !self.search.query.is_empty();
         let area = Rect { height: full.height.saturating_sub(u16::from(status)), ..full };
-        let mut y = -i32::from(self.scroll); // top of the current block, relative to the screen
+        let mut y = -i64::from(self.scroll); // top of the current block, relative to the screen
         for block in &self.blocks {
-            let h = i32::from(block.height());
-            if y + h > 0 && y < i32::from(area.height) {
+            let h = i64::from(block.height());
+            if y + h > 0 && y < i64::from(area.height) {
+                // Both fit in u16 once the block is on screen: skip < h, top < area.height.
                 let skip = (-y).max(0) as u16; // rows of this block scrolled off the top
                 let top = y.max(0) as u16;
-                let rows = (y + h).min(i32::from(area.height)) as u16 - top;
+                let rows = (y + h).min(i64::from(area.height)) as u16 - top;
                 match block {
                     Block::Text(p, _) => {
                         frame.render_widget(p.clone().scroll((skip, 0)), Rect::new(0, top, area.width, rows));
@@ -173,9 +205,10 @@ impl Viewer {
             y += h;
         }
         for (index, hit) in self.search.hits.iter().enumerate() {
-            if hit.row < self.scroll || hit.row - self.scroll >= area.height { continue; }
+            if hit.row < self.scroll || hit.row - self.scroll >= u32::from(area.height) { continue; }
+            let y = (hit.row - self.scroll) as u16;
             for x in hit.start..hit.end.min(area.width) {
-                let cell = &mut frame.buffer_mut()[(x, hit.row - self.scroll)];
+                let cell = &mut frame.buffer_mut()[(x, y)];
                 cell.set_bg(yamdview::theme::color(self.theme.selection));
                 if self.search.current == Some(index) {
                     cell.set_fg(yamdview::theme::color(self.theme.accent));
@@ -188,7 +221,11 @@ impl Viewer {
             } else {
                 format!("{}/{}", self.search.current.map_or(0, |i| i + 1), self.search.hits.len())
             };
-            let prompt = format!("/{}  [{}]", self.search.query, count);
+            let prompt = if self.search.query.is_empty() {
+                "/".to_string()
+            } else {
+                format!("/{}  [{}]", self.search.query, count)
+            };
             frame.render_widget(Paragraph::new(prompt), Rect::new(0, full.height - 1, full.width, 1));
         }
     }
@@ -235,7 +272,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 (dirty, repaint) = (false, true);
             }
             let height = size.height.saturating_sub(u16::from(v.search.editing || !v.search.query.is_empty()));
-            let (page, max) = (height.saturating_sub(2), v.total().saturating_sub(height));
+            let (page, max) = (u32::from(height.saturating_sub(2)), v.total().saturating_sub(u32::from(height)));
             v.scroll = v.scroll.min(max);
             let rendered = terminal.draw(|f| {
                 v.draw(f);
@@ -257,6 +294,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             } else {
                 let s = v.scroll;
+                let mut search_jump = false;
                 v.scroll = match event::read()? {
                     event::Event::Key(k) if k.kind == KeyEventKind::Press => {
                         selection.clear();
@@ -265,16 +303,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             match k.code {
                                 KeyCode::Enter => v.search.editing = false,
                                 KeyCode::Esc => {
-                                    v.search.editing = false;
-                                    v.search.query.clear();
+                                    v.scroll = v.search.cancel();
                                 }
                                 KeyCode::Backspace => { v.search.query.pop(); }
                                 KeyCode::Char(c) if !ctrl && !k.modifiers.contains(KeyModifiers::ALT) => v.search.query.push(c),
                                 _ => {}
                             }
-                            if k.code != KeyCode::Enter {
-                                v.update_search(size.width);
-                                v.scroll = v.search.jump(s, false).unwrap_or(s);
+                            if !matches!(k.code, KeyCode::Enter | KeyCode::Esc) {
+                                v.scroll = v.search.incremental();
                             }
                             repaint = true;
                             continue;
@@ -282,17 +318,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         match k.code {
                             KeyCode::Char('/') => {
                                 repaint = true;
-                                v.search.editing = true;
-                                v.search.query.clear();
-                                v.update_search(size.width);
+                                v.cache_search(size.width);
+                                v.search.begin(s);
                                 s
                             }
-                            KeyCode::Char('n') => v.search.jump(s, false).unwrap_or(s),
-                            KeyCode::Char('N') => v.search.jump(s, true).unwrap_or(s),
+                            KeyCode::Char('n') => { search_jump = true; v.search.jump(s, false).unwrap_or(s) },
+                            KeyCode::Char('N') => { search_jump = true; v.search.jump(s, true).unwrap_or(s) },
                             KeyCode::Esc if !v.search.query.is_empty() => {
                                 repaint = true;
-                                v.search.query.clear();
-                                v.update_search(size.width);
+                                v.search.cancel();
                                 s
                             }
                             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
@@ -343,6 +377,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     _ => s,
                 }
                 .min(max);
+                if v.scroll != s && !search_jump { v.search.current = None; }
                 repaint |= v.scroll != s;
             }
             let mtime = std::fs::metadata(&v.path).and_then(|m| m.modified()).ok();
@@ -377,9 +412,11 @@ mod tests {
                 Block::Text(Paragraph::new("target target"), 1),
             ],
             scroll: 3, tmux: false, theme: Theme::dracula(),
-            search: search::Search { query: "target".into(), ..Default::default() },
+            search: search::Search::default(),
         };
-        viewer.update_search(20);
+        viewer.search.query = "target".into();
+        viewer.cache_search(20);
+        viewer.search.refresh();
         assert_eq!(viewer.search.hits.len(), 2);
         assert_eq!(viewer.search.jump(0, false), Some(4));
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 3)).unwrap();
@@ -388,9 +425,43 @@ mod tests {
         assert_eq!(buffer[(0, 1)].symbol(), "t");
         assert_eq!(buffer[(0, 1)].bg, yamdview::theme::color(viewer.theme.selection));
         assert_eq!(buffer[(0, 2)].symbol(), "/");
-        viewer.search.query.clear();
-        viewer.update_search(10);
+        viewer.search.cancel();
         assert!(viewer.search.hits.is_empty());
         assert_eq!(viewer.search.current, None);
+        assert!(!viewer.search.cached());
+    }
+
+    #[test]
+    fn documents_past_u16_rows_split_scroll_and_search() {
+        let path = std::env::temp_dir().join(format!("yamdview-test-{}.md", std::process::id()));
+        let md: String = (0..70_000).map(|i| format!("row{i}\n\n")).collect();
+        std::fs::write(&path, md).unwrap();
+        let mut viewer = Viewer {
+            path: path.clone(), mtime: None, ids: Vec::new(), blocks: Vec::new(),
+            scroll: 0, tmux: false, theme: Theme::dracula(), search: search::Search::default(),
+        };
+        viewer.rebuild(&mut Vec::new(), 10).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(viewer.total() > u32::from(u16::MAX));
+        assert!(viewer.blocks.len() > 1);
+        assert!(!viewer.search.cached());
+
+        viewer.search.query = "row69999".into();
+        viewer.cache_search(10);
+        viewer.search.refresh();
+        let row = viewer.search.jump(0, false).unwrap();
+        assert!(row > u32::from(u16::MAX));
+        viewer.scroll = row;
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(10, 3)).unwrap();
+        terminal.draw(|frame| viewer.draw(frame)).unwrap();
+        let top: String = (0..8).map(|x| terminal.backend().buffer()[(x, 0)].symbol().to_string()).collect();
+        assert_eq!(top, "row69999");
+    }
+
+    #[test]
+    fn single_line_past_u16_rows_is_cut_off() {
+        let blocks = paragraphs(Text::from("x ".repeat(70_000)), 1);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].1, u16::MAX);
     }
 }
