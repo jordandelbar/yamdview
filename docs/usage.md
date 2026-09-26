@@ -32,6 +32,7 @@ curl -s https://raw.githubusercontent.com/jordandelbar/yamdview/main/README.md |
 | `ctrl-d`, `ctrl-u`  | Half a page down, up                         |
 | `g`, `Home`         | Go to the top                                |
 | `G`, `End`          | Go to the bottom                             |
+| `]`, `[`            | Next, previous heading                       |
 | `/`                 | Start a search                               |
 | `n`, `N`            | Next, previous match                         |
 | `Esc`               | Clear the search, or quit if there isn't one |

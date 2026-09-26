@@ -174,6 +174,12 @@ pub fn markdown(md: &str, theme: &Theme) -> Text<'static> {
     Text::from(lines.collect::<Vec<_>>()).style(theme::color(theme.foreground))
 }
 
+/// Whether `line` is a heading. tui-markdown gives heading lines the heading style as
+/// their line style; nothing else gets it (table headers style their spans instead).
+pub fn is_heading(line: &Line, theme: &Theme) -> bool {
+    (1..=6).any(|level| line.style == theme.heading(level))
+}
+
 /// tui-markdown writes task items as `- [x] ` (or `[x] ` after an ordered marker).
 /// Draw a checkbox instead, as GitHub does: muted when open, `success` when done.
 /// Brackets and ✓ are in nearly every monospace font, so both states render in the
@@ -368,5 +374,19 @@ mod tests {
         let rgb = |c: [u8; 3]| Some(Color::Rgb(c[0], c[1], c[2]));
         assert_eq!(span("f").fg, rgb(t.keyword), "first cell of `fn` keeps keyword color");
         assert_eq!(span("│ ").fg, rgb(t.warning));
+    }
+
+    #[test]
+    fn detects_headings_by_line_style_only() {
+        let t = Theme::dracula();
+        let md = "# One\n\n## Two\n\n###### Six\n\n**bold** text\n\n> quote\n\n| Head |\n| ---- |\n| cell |\n\n```sh\n# comment\n```\n";
+        let text = markdown(md, &t);
+        let headings: Vec<String> = text
+            .lines
+            .iter()
+            .filter(|l| is_heading(l, &t))
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert_eq!(headings, ["One", "Two", "Six"]);
     }
 }
