@@ -47,6 +47,30 @@ home.packages = [ inputs.yamdview.packages.${pkgs.stdenv.hostPlatform.system}.de
 
 `nix flake update yamdview` picks up new versions.
 
+That builds yamdview from source. To install the prebuilt release binary
+instead, so nothing compiles, point an input at the release file:
+
+```nix
+inputs.yamdview-bin = {
+  url = "file+https://github.com/jordandelbar/yamdview/releases/download/v0.2.0/yamdview-x86_64-linux"; # x-release-please-version
+  flake = false;
+};
+```
+
+```nix
+home.packages = [
+  (pkgs.runCommand "yamdview" { meta.mainProgram = "yamdview"; } ''
+    install -Dm755 ${inputs.yamdview-bin} $out/bin/yamdview
+  '')
+];
+```
+
+The Linux binary is static, so it runs as is. On macOS, use
+`yamdview-aarch64-darwin`. Keep the version in the URL: a `releases/latest`
+URL serves new content at the same address, which breaks the locked hash once
+the old download is garbage collected. To upgrade, change the version, then
+run `nix flake update yamdview-bin`.
+
 ## Usage
 
 From a clone of this repository, open the showcase, which has every supported
