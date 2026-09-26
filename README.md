@@ -2,61 +2,62 @@
 
 [![CI](https://github.com/jordandelbar/yamdview/actions/workflows/ci.yml/badge.svg)](https://github.com/jordandelbar/yamdview/actions/workflows/ci.yml)
 
-Render markdown in the terminal, with mermaid diagrams drawn as images
-(kitty graphics protocol: Ghostty, kitty, WezTerm). No browser involved:
-diagrams go through [merman](https://github.com/Latias94/merman).
+A terminal markdown viewer that draws mermaid diagrams as images.
 
 ![yamdview showing this README in Ghostty, with its mermaid diagrams drawn inline](docs/screenshot.png)
 
+It redraws whenever the file is saved, so it fits in a split next to your
+editor. Diagrams are rendered locally with
+[merman](https://github.com/Latias94/merman) and shown through the kitty
+graphics protocol, which Ghostty, kitty and WezTerm support.
+
+## Install
+
+Download a binary from the
+[latest release](https://github.com/jordandelbar/yamdview/releases/latest)
+(Linux x86_64, static, or macOS on Apple silicon), or build it:
+
 ```sh
-cargo run --release -- README.md
+cargo install --locked --git https://github.com/jordandelbar/yamdview
 ```
 
-Prebuilt binaries for Linux x86_64 (static) and macOS Apple silicon are attached
-to each [release](https://github.com/jordandelbar/yamdview/releases/latest).
+With Nix, try it without installing. With no file argument, it opens the
+`README.md` in the current directory:
 
-A live viewer: it re-renders when the file is saved or the pane is resized,
-so run it in a split next to your editor.
+```sh
+nix run github:jordandelbar/yamdview
+```
 
-Colors and font come from `~/.config/yamdview/theme`: one `role = #rrggbb`
-line per role (`background`, `foreground`, `selection`, `muted`, `heading`,
-`bold`, `italic`, `code`, `link`, `quote`, `comment`, `keyword`, `string`,
-`function`, `type`, `number`, `parameter`, `accent`, `note`, `info`,
-`success`, `warning`, `error`) plus `font-family = Name`. Without that file
-they come from Ghostty (`ghostty +show-config`), else Dracula.
+To install it from a flake-based config, add the input:
 
-Keys: `j`/`k` or arrows, `space`/`b` page, `ctrl-d`/`ctrl-u` half page,
-`g`/`G` top/bottom, `q` to quit.
+```nix
+inputs.yamdview = {
+  url = "github:jordandelbar/yamdview";
+  inputs.nixpkgs.follows = "nixpkgs";
+};
+```
 
-Search: `/` opens a prompt and searches as you type. `Enter` keeps the search,
-`n`/`N` jump to the next/previous match (wrapping at the ends), and `Esc`
-clears it. Matches are highlighted, with a match counter on the bottom line.
-While typing, `Esc` cancels and returns to where the search started. After
-scrolling, reloading, or resizing, `n`/`N` search beyond the current top row.
-Search is literal and case-sensitive, within each displayed line of text;
-diagram images are not searchable.
+Then add the package in a home-manager module, with `inputs` passed through
+`extraSpecialArgs`. For NixOS, use `environment.systemPackages` and
+`specialArgs` instead.
 
-The mouse wheel scrolls the document, including inside tmux. In tmux, drag
-with the left button to highlight visible text; releasing copies it to tmux's
-paste buffer without entering copy mode. Paste with tmux's usual `prefix ]`.
-The viewer also asks tmux to forward the text to the terminal clipboard;
-clipboard support depends on your terminal and tmux configuration. Diagram
-image placeholders are excluded from copied text. Scrolling, typing, resizing,
-or reloading clears the selection.
+```nix
+home.packages = [ inputs.yamdview.packages.${pkgs.stdenv.hostPlatform.system}.default ];
+```
 
-Enable tmux mouse support with `set -g mouse on` in `~/.tmux.conf`.
-No custom mouse bindings are needed with tmux's default bindings.
-See [tmux mouse support](https://github.com/tmux/tmux/wiki/Getting-Started#using-the-mouse).
+`nix flake update yamdview` picks up new versions.
 
-Mouse capture is enabled by default; `yamdview --no-mouse FILE.md` disables
-it, and `--mouse` explicitly enables it. Outside tmux, use your terminal's
-selection modifier (usually Shift) while dragging to copy text.
+## Usage
 
-## Development
+From a clone of this repository, open the showcase, which has every supported
+element and diagram type:
 
-`nix develop` (or `direnv allow`, via `.envrc`) gives a shell with the Rust
-toolchain, lefthook and commitlint. Run `lefthook install` once to check commit
-messages against `commitlint.config.js`.
+```sh
+yamdview examples/showcase.md    # or: cargo run -- examples/showcase.md
+```
+
+With no file, it opens `README.md`. Keys, search, mouse selection, tmux setup
+and themes are covered in [docs/usage.md](docs/usage.md).
 
 ## How it works
 
@@ -71,22 +72,8 @@ flowchart LR
     F --> G
 ```
 
-## A sequence diagram
+## Development
 
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant M as yamdview
-    participant T as Ghostty
-    U->>M: yamdview README.md
-    M->>M: split markdown
-    M->>T: styled text
-    M->>T: PNG via ESC _G
-    T-->>U: diagram on screen
-```
-
-Other code blocks stay as code:
-
-```rust
-fn main() { println!("hi"); }
-```
+`nix develop`, or `direnv allow`, gives you a shell with the Rust toolchain
+and every tool the git hooks use. Run `lefthook install` once to enable them.
+CI runs the same hooks before the tests.
