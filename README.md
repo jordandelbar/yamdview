@@ -1,5 +1,7 @@
 # yamdview
 
+[![CI](https://github.com/jordandelbar/yamdview/actions/workflows/ci.yml/badge.svg)](https://github.com/jordandelbar/yamdview/actions/workflows/ci.yml)
+
 Render markdown in the terminal, with mermaid diagrams drawn as images
 (kitty graphics protocol: Ghostty, kitty, WezTerm). No browser involved:
 diagrams go through [merman](https://github.com/Latias94/merman).

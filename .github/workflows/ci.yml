@@ -3,7 +3,13 @@ name: CI
 on:
   push:
     branches: [main]
+    paths: &code
+      - src/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/ci.yml
   pull_request:
+    paths: *code
 
 jobs:
   check:
