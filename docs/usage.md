@@ -1,7 +1,7 @@
 # Using yamdview
 
 ```sh
-yamdview [--mouse | --no-mouse] [--] [FILE | -]
+yamdview [-p | --print] [--mouse | --no-mouse] [--images | --no-images] [--] [FILE | -]
 ```
 
 `FILE` defaults to `README.md`. yamdview redraws when the file is saved and
@@ -15,18 +15,34 @@ gh pr view 12 | yamdview
 curl -s https://raw.githubusercontent.com/jordandelbar/yamdview/main/README.md | yamdview
 ```
 
-| Option        | Effect                                                            |
-| ------------- | ----------------------------------------------------------------- |
-| `--mouse`     | Capture the mouse. This is the default.                           |
-| `--no-mouse`  | Leave the mouse to the terminal, for its own selection behavior.  |
-| `--images`    | Draw diagrams as images, even if the terminal isn't detected.     |
-| `--no-images` | Show diagrams as their mermaid source.                            |
-| `--`          | Treat the next argument as the file, even if it starts with `-`.  |
+| Option          | Effect                                                           |
+| --------------- | ---------------------------------------------------------------- |
+| `-p`, `--print` | Print the whole document styled, with diagrams, then exit.       |
+| `--mouse`       | Capture the mouse. This is the default.                          |
+| `--no-mouse`    | Leave the mouse to the terminal, for its own selection behavior. |
+| `--images`      | Draw diagrams as images, even if the terminal isn't detected.    |
+| `--no-images`   | Show diagrams as their mermaid source.                           |
+| `--`            | Treat the next argument as the file, even if it starts with `-`. |
 
 Diagrams are drawn as images in Ghostty and kitty, which support kitty's
 Unicode image placeholders. yamdview recognizes them from the environment, or
 inside tmux from the client terminal tmux reports. Anywhere else, it shows the
 diagram source in a box. If it guesses wrong, use `--images` or `--no-images`.
+
+## Printing
+
+When its output goes to a pipe or a file instead of the terminal, yamdview
+prints the rendered document as plain text and exits, like `git log` does:
+
+```sh
+yamdview notes.md | grep TODO
+yamdview notes.md > notes.txt
+```
+
+`--print` (or `-p`) prints to the terminal instead, with colors and diagrams. The whole
+document then sits in the terminal's scrollback, so tmux copy mode works over
+all of it: `prefix [`, `V`, `j`/`k` and scrolling past the edge, as in any
+shell pane. The viewer can't offer that, since tmux only sees one screen of it.
 
 ## Keys
 
