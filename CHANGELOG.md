@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/jordandelbar/yamdview/compare/v0.3.0...v0.4.0) (2026-09-26)
+
+
+### Features
+
+* Print the rendered document with --print ([#18](https://github.com/jordandelbar/yamdview/issues/18)) ([5820159](https://github.com/jordandelbar/yamdview/commit/58201590d494c0448d8eceb07547c3011d78772c))
+
+
+### Bug Fixes
+
+* Keep tmux refresh errors off the screen in detached sessions ([#17](https://github.com/jordandelbar/yamdview/issues/17)) ([9fb2992](https://github.com/jordandelbar/yamdview/commit/9fb2992ef6a2e19a3260f59476187dc6a347147b))
+
 ## [0.3.0](https://github.com/jordandelbar/yamdview/compare/v0.2.0...v0.3.0) (2026-09-26)
 
 
