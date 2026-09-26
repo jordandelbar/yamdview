@@ -14,6 +14,9 @@ Plain text with **bold**, _italic_, `inline code` and a
 1. A numbered list
 2. with two items
 
+- [ ] A check
+- [x] list
+
 > A quote.
 
 > [!NOTE]
