@@ -13,6 +13,16 @@
         );
     in
     {
+      packages = forAllSystems (pkgs: {
+        default = pkgs.rustPlatform.buildRustPackage {
+          pname = "yamdview";
+          version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
+          src = ./.;
+          cargoLock.lockFile = ./Cargo.lock;
+          meta.mainProgram = "yamdview";
+        };
+      });
+
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
           packages = with pkgs; [
