@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.0](https://github.com/jordandelbar/yamdview/compare/v0.2.0...v0.3.0) (2026-09-26)
+
+
+### Features
+
+* Better rendering of alerts and checkboxes ([#10](https://github.com/jordandelbar/yamdview/issues/10)) ([c0b21a7](https://github.com/jordandelbar/yamdview/commit/c0b21a7bc379fe04e5a80fc26ee0a78414a24003))
+* Jump between headings ([#14](https://github.com/jordandelbar/yamdview/issues/14)) ([99aa01d](https://github.com/jordandelbar/yamdview/commit/99aa01d24838b5569492e80df3d2915b629bef61))
+* Read markdown from stdin ([#13](https://github.com/jordandelbar/yamdview/issues/13)) ([dc5aa14](https://github.com/jordandelbar/yamdview/commit/dc5aa1409ddea1c6550732edcf0c642fdfdce164))
+* Show diagram source in terminals without kitty graphics ([#16](https://github.com/jordandelbar/yamdview/issues/16)) ([2ac1cd0](https://github.com/jordandelbar/yamdview/commit/2ac1cd00bd64f47cf13fe605a94b33bd144c7768))
+
 ## [0.2.0](https://github.com/jordandelbar/yamdview/compare/v0.1.0...v0.2.0) (2026-09-26)
 
 
