@@ -109,6 +109,17 @@ pub fn paragraphs(
     out
 }
 
+/// A terminal cell's size in pixels.
+/// ponytail: assumes 10x20px cells if the terminal won't report pixel size.
+fn cell_size() -> (u32, u32) {
+    window_size()
+        .ok()
+        .filter(|w| w.width > 0 && w.height > 0 && w.columns > 0 && w.rows > 0)
+        .map_or((10, 20), |w| {
+            (u32::from(w.width / w.columns), u32::from(w.height / w.rows))
+        })
+}
+
 pub struct Viewer {
     pub path: PathBuf,
     /// Document rows where headings start, in order, for `[` and `]`.
@@ -166,28 +177,43 @@ impl Viewer {
                 != self.mtime
     }
 
+    /// The markdown: stdin, or the file read afresh (noting its mtime for `changed_on_disk`).
+    fn read(&mut self) -> std::io::Result<String> {
+        if let Some(md) = &self.stdin {
+            return Ok(md.clone());
+        }
+        self.mtime = std::fs::metadata(&self.path)
+            .and_then(|m| m.modified())
+            .ok();
+        std::fs::read_to_string(&self.path)
+    }
+
+    /// Upload a rendered diagram and add it as the next block, sized in `cell`s.
+    fn push_image(
+        &mut self,
+        out: &mut impl Write,
+        png: &[u8],
+        cell: (u32, u32),
+    ) -> std::io::Result<()> {
+        let max = DIACRITICS.len() as u32;
+        let (w, h) = png_size(png);
+        let (cols, rows) = (
+            w.div_ceil(cell.0).min(max) as u16,
+            h.div_ceil(cell.1).min(max) as u16,
+        );
+        // 24-bit id (sent as a truecolor fg): pid keeps viewers in other panes apart.
+        let id = (std::process::id() & 0xffff) << 8 | (self.ids.len() as u32 + 1);
+        upload(out, id, png, cols, rows, self.tmux)?;
+        self.ids.push(id);
+        self.blocks.push(Block::Image { id, cols, rows });
+        Ok(())
+    }
+
     /// Re-read the file (or reuse stdin) and re-render everything for the current terminal size.
     pub fn rebuild(&mut self, out: &mut impl Write, width: u16) -> std::io::Result<()> {
         self.free_images(out)?;
-        let md = match &self.stdin {
-            Some(md) => md.clone(),
-            None => {
-                self.mtime = std::fs::metadata(&self.path)
-                    .and_then(|m| m.modified())
-                    .ok();
-                std::fs::read_to_string(&self.path)?
-            }
-        };
-
-        // ponytail: assumes 10x20px cells if the terminal won't report pixel size.
-        let cell = window_size()
-            .ok()
-            .filter(|w| w.width > 0 && w.height > 0 && w.columns > 0 && w.rows > 0)
-            .map_or((10, 20), |w| {
-                (u32::from(w.width / w.columns), u32::from(w.height / w.rows))
-            });
-        let max = DIACRITICS.len() as u32;
-
+        let md = self.read()?;
+        let cell = cell_size();
         self.blocks.clear();
         self.headings.clear();
         self.search.clear_layout();
@@ -218,17 +244,7 @@ impl Viewer {
                 Chunk::Mermaid { raw, source } => {
                     match diagram(&source, &self.theme, u32::from(width) * cell.0, cell.1) {
                         Ok(Some(png)) => {
-                            let (w, h) = png_size(&png);
-                            let (cols, rows) = (
-                                w.div_ceil(cell.0).min(max) as u16,
-                                h.div_ceil(cell.1).min(max) as u16,
-                            );
-                            // 24-bit id (sent as a truecolor fg): pid keeps viewers in other panes apart.
-                            let id =
-                                (std::process::id() & 0xffff) << 8 | (self.ids.len() as u32 + 1);
-                            upload(out, id, &png, cols, rows, self.tmux)?;
-                            self.ids.push(id);
-                            self.blocks.push(Block::Image { id, cols, rows });
+                            self.push_image(out, &png, cell)?;
                             continue;
                         }
                         // Unsupported or invalid diagram: show the source instead.
@@ -409,14 +425,50 @@ mod tests {
         assert!(!viewer.search.cached());
     }
 
+    /// A viewer of `md` as if piped in, not laid out yet.
+    fn piped(md: &str, images: bool) -> Viewer {
+        Viewer::new(
+            PathBuf::from("-"),
+            Some(md.into()),
+            false,
+            images,
+            Theme::dracula(),
+        )
+    }
+
+    /// `md` as if piped in, laid out `width` columns wide.
+    fn built(md: &str, width: u16, images: bool) -> Viewer {
+        let mut v = piped(md, images);
+        v.rebuild(&mut Vec::new(), width).unwrap();
+        v
+    }
+
+    /// The `height` rows `v` draws at `width` columns, trailing blanks trimmed.
+    fn rows(v: &Viewer, width: u16, height: u16) -> Vec<String> {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| v.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// Every row of `v`.
+    fn screen(v: &Viewer, width: u16) -> Vec<String> {
+        rows(v, width, v.total() as u16)
+    }
+
     #[test]
     fn documents_past_u16_rows_split_scroll_and_search() {
-        let path = std::env::temp_dir().join(format!("yamdview-test-{}.md", std::process::id()));
         let md: String = (0..70_000).map(|i| format!("row{i}\n\n")).collect();
-        std::fs::write(&path, md).unwrap();
-        let mut viewer = Viewer::new(path.clone(), None, false, true, Theme::dracula());
-        viewer.rebuild(&mut Vec::new(), 10).unwrap();
-        std::fs::remove_file(&path).unwrap();
+        let mut viewer = built(&md, 10, true);
         assert!(viewer.total() > u32::from(u16::MAX));
         assert!(viewer.blocks.len() > 1);
         assert!(!viewer.search.cached());
@@ -427,13 +479,7 @@ mod tests {
         let row = viewer.search.jump(0, false).unwrap();
         assert!(row > u32::from(u16::MAX));
         viewer.scroll = row;
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(10, 3)).unwrap();
-        terminal.draw(|frame| viewer.draw(frame)).unwrap();
-        let top: String = (0..8)
-            .map(|x| terminal.backend().buffer()[(x, 0)].symbol().to_string())
-            .collect();
-        assert_eq!(top, "row69999");
+        assert_eq!(rows(&viewer, 10, 3)[0], "row69999");
     }
 
     #[test]
@@ -457,29 +503,8 @@ mod tests {
 
     #[test]
     fn consecutive_boxes_share_one_blank_line() {
-        let path = std::env::temp_dir().join(format!("yamdview-boxes-{}.md", std::process::id()));
-        std::fs::write(
-            &path,
-            "Intro.\n\n> [!NOTE]\n> a\n\n> [!TIP]\n> b\n\nOutro.\n",
-        )
-        .unwrap();
-        let mut viewer = Viewer::new(path.clone(), None, false, true, Theme::dracula());
-        viewer.rebuild(&mut Vec::new(), 40).unwrap();
-        std::fs::remove_file(&path).unwrap();
-        let height = viewer.total() as u16;
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, height)).unwrap();
-        terminal.draw(|frame| viewer.draw(frame)).unwrap();
-        let buffer = terminal.backend().buffer();
-        let rows: Vec<String> = (0..height)
-            .map(|y| {
-                (0..40)
-                    .map(|x| buffer[(x, y)].symbol())
-                    .collect::<String>()
-                    .trim_end()
-                    .to_string()
-            })
-            .collect();
+        let md = "Intro.\n\n> [!NOTE]\n> a\n\n> [!TIP]\n> b\n\nOutro.\n";
+        let rows = screen(&built(md, 40, true), 40);
         let first = |c: char| rows.iter().position(|r| r.starts_with(c)).unwrap();
         let tip_top = rows.iter().position(|r| r.starts_with("╭─ Tip")).unwrap();
         assert_eq!(
@@ -501,58 +526,42 @@ mod tests {
 
     #[test]
     fn renders_stdin_without_a_file() {
-        let mut viewer = Viewer::new(
-            PathBuf::from("-"),
-            Some("# Piped\n\nfrom a pipe\n".into()),
-            false,
-            true,
-            Theme::dracula(),
-        );
-        viewer.rebuild(&mut Vec::new(), 30).unwrap();
+        let viewer = built("# Piped\n\nfrom a pipe\n", 30, true);
         assert_eq!(viewer.mtime, None, "nothing to watch");
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 4)).unwrap();
-        terminal.draw(|frame| viewer.draw(frame)).unwrap();
-        let rows: Vec<String> = (0..4)
-            .map(|y| {
-                (0..30)
-                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
-                    .collect::<String>()
-                    .trim_end()
-                    .to_string()
-            })
-            .collect();
+        assert!(!viewer.changed_on_disk());
+        let rows = rows(&viewer, 30, 4);
         assert_eq!(rows[0], "Piped");
         assert!(rows.contains(&"from a pipe".to_string()), "{rows:#?}");
     }
 
     #[test]
-    fn heading_rows_match_the_screen_and_jumps_move_between_them() {
-        let path =
-            std::env::temp_dir().join(format!("yamdview-headings-{}.md", std::process::id()));
-        let long = "word ".repeat(30);
-        std::fs::write(
-            &path,
-            format!(
-                "# Top\n\n{long}\n\n## Code\n\n```sh\n# not a heading\n```\n\n## Table\n\n| a |\n| - |\n| b |\n\n### Last\n\nend\n"
-            ),
-        )
-        .unwrap();
+    fn reads_the_file_and_notices_saves() {
+        let path = std::env::temp_dir().join(format!("yamdview-file-{}.md", std::process::id()));
+        std::fs::write(&path, "# On disk\n").unwrap();
         let mut viewer = Viewer::new(path.clone(), None, false, true, Theme::dracula());
-        viewer.rebuild(&mut Vec::new(), 30).unwrap();
+        viewer.rebuild(&mut Vec::new(), 20).unwrap();
+        assert_eq!(rows(&viewer, 20, 1), ["On disk"]);
+        assert!(!viewer.changed_on_disk());
+        let file = std::fs::File::options().write(true).open(&path).unwrap();
+        file.set_modified(SystemTime::UNIX_EPOCH).unwrap();
+        let changed = viewer.changed_on_disk();
         std::fs::remove_file(&path).unwrap();
-        let height = viewer.total() as u16;
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, height)).unwrap();
-        terminal.draw(|frame| viewer.draw(frame)).unwrap();
-        let row = |y: u32| {
-            (0..30)
-                .map(|x| terminal.backend().buffer()[(x, y as u16)].symbol())
-                .collect::<String>()
-                .trim_end()
-                .to_string()
-        };
-        let titles: Vec<String> = viewer.headings.iter().map(|&y| row(y)).collect();
+        assert!(changed, "a new mtime counts as a save");
+    }
+
+    #[test]
+    fn heading_rows_match_the_screen_and_jumps_move_between_them() {
+        let long = "word ".repeat(30);
+        let md = format!(
+            "# Top\n\n{long}\n\n## Code\n\n```sh\n# not a heading\n```\n\n## Table\n\n| a |\n| - |\n| b |\n\n### Last\n\nend\n"
+        );
+        let viewer = built(&md, 30, true);
+        let rows = screen(&viewer, 30);
+        let titles: Vec<&str> = viewer
+            .headings
+            .iter()
+            .map(|&y| rows[y as usize].as_str())
+            .collect();
         assert_eq!(
             titles,
             ["Top", "Code", "Table", "Last"],
@@ -578,31 +587,14 @@ mod tests {
 
     #[test]
     fn without_images_diagrams_show_as_boxed_source() {
-        let path = std::env::temp_dir().join(format!("yamdview-noimg-{}.md", std::process::id()));
-        std::fs::write(
-            &path,
+        let viewer = built(
             "Intro.\n\n```mermaid\ngraph TD\n  A-->B\n```\n\nOutro.\n",
-        )
-        .unwrap();
-        let mut viewer = Viewer::new(path.clone(), None, false, false, Theme::dracula());
-        let mut out = Vec::new();
-        viewer.rebuild(&mut out, 40).unwrap();
-        std::fs::remove_file(&path).unwrap();
-        assert!(out.is_empty(), "nothing sent to the terminal as an image");
+            40,
+            false,
+        );
+        assert!(viewer.ids.is_empty(), "nothing uploaded to the terminal");
         assert!(viewer.blocks.iter().all(|b| matches!(b, Block::Text(..))));
-        let height = viewer.total() as u16;
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, height)).unwrap();
-        terminal.draw(|frame| viewer.draw(frame)).unwrap();
-        let rows: Vec<String> = (0..height)
-            .map(|y| {
-                (0..40)
-                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
-                    .collect::<String>()
-                    .trim_end()
-                    .to_string()
-            })
-            .collect();
+        let rows = screen(&viewer, 40);
         assert!(
             rows.iter().any(|r| r.starts_with("╭─ mermaid")),
             "{rows:#?}"
@@ -611,13 +603,7 @@ mod tests {
     }
 
     fn printed(md: &str, images: bool, styled: bool) -> String {
-        let mut viewer = Viewer::new(
-            PathBuf::from("-"),
-            Some(md.into()),
-            false,
-            images,
-            Theme::dracula(),
-        );
+        let mut viewer = piped(md, images);
         let mut out = Vec::new();
         viewer.print(&mut out, 40, styled).unwrap();
         String::from_utf8(out).unwrap()
