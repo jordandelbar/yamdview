@@ -1,14 +1,14 @@
-//! Markdown with mermaid diagrams, rendered for a terminal in one [`Theme`].
+//! Documents with mermaid diagrams, rendered for a terminal in one [`Theme`].
 
 pub mod document;
 pub mod markdown;
 pub mod theme;
 
+use document::{AdmonitionKind, Block, Document, Inline, Node};
 use merman::render::{
     HeadlessRenderer,
     raster::{RasterError, RasterFitBox, RasterOptions},
 };
-use pulldown_cmark::{BlockQuoteKind, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use ratatui::{
     buffer::{Buffer, Cell},
     layout::Rect,
@@ -20,126 +20,123 @@ pub use theme::Theme;
 pub use tui_markdown::AlertKind;
 use tui_markdown::StyleSheet;
 
-pub enum Chunk<'a> {
-    Text(&'a str),
-    Mermaid {
-        raw: &'a str,
-        source: String,
-    },
-    /// A top-level code block or GitHub alert, drawn in a rounded box by [`boxed`].
+/// A stretch of a document the viewer lays out one way.
+pub enum Chunk {
+    /// Flowing text: paragraphs, headings, lists, tables, nested code.
+    Prose(Vec<Block>),
+    /// A top-level code block or alert, drawn in a rounded box by [`boxed`].
     Boxed {
-        md: String,
+        body: Vec<Block>,
         title: String,
         alert: Option<AlertKind>,
     },
+    /// A top-level mermaid code block: `lang` is its info string, for showing the
+    /// source when the diagram can't be drawn.
+    Mermaid { lang: String, source: String },
 }
 
-/// Split markdown into plain text, ```mermaid fenced blocks and boxed blocks, keeping
-/// source order.
-pub fn split(md: &str) -> Vec<Chunk<'_>> {
-    let mut chunks = Vec::new();
-    let mut last = 0;
-    let mut current: Option<(std::ops::Range<usize>, String)> = None;
-    let (mut depth, mut boxed_until) = (0usize, 0);
-    for (event, range) in Parser::new_ext(md, Options::ENABLE_GFM).into_offset_iter() {
-        // Everything inside a boxed block was already taken with it.
-        if range.start < boxed_until {
-            continue;
-        }
-        let boxed = match &event {
-            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(lang)))
-                if lang.split_whitespace().next() == Some("mermaid") =>
-            {
-                current = Some((range.clone(), String::new()));
-                None
+/// Split a document into prose, boxes and diagrams, in order. Only top-level code
+/// blocks and alerts are boxed: inside a list or quote they stay part of the text.
+pub fn chunks(doc: Document) -> Vec<Chunk> {
+    let (mut chunks, mut prose) = (Vec::new(), Vec::new());
+    for block in doc {
+        let chunk = match block {
+            Block::Code { lang, code } if lang.split_whitespace().next() == Some("mermaid") => {
+                Chunk::Mermaid { lang, source: code }
             }
-            Event::Start(Tag::CodeBlock(kind)) if depth == 0 => {
-                let title = match kind {
-                    CodeBlockKind::Fenced(lang) => lang
-                        .split_whitespace()
-                        .next()
-                        .unwrap_or_default()
-                        .to_string(),
-                    CodeBlockKind::Indented => String::new(),
-                };
-                Some(Chunk::Boxed {
-                    md: md[range.clone()].to_string(),
-                    title,
-                    alert: None,
-                })
-            }
-            Event::Start(Tag::BlockQuote(Some(kind))) if depth == 0 => {
-                let alert = alert_kind(*kind);
-                // The alert's content, without its `> ` prefixes and `[!KIND]` line.
-                let inner = md[range.clone()]
-                    .lines()
-                    .skip(1)
-                    .map(|l| {
-                        let l = l.trim_start();
-                        let l = l.strip_prefix('>').unwrap_or(l);
-                        l.strip_prefix(' ').unwrap_or(l)
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                Some(Chunk::Boxed {
-                    md: inner,
+            Block::Code { lang, code } => Chunk::Boxed {
+                title: lang
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or_default()
+                    .to_string(),
+                body: vec![Block::Code { lang, code }],
+                alert: None,
+            },
+            Block::Admonition { kind, body } => {
+                let alert = alert_kind(kind);
+                Chunk::Boxed {
+                    body,
                     title: alert.label().to_string(),
                     alert: Some(alert),
-                })
+                }
             }
-            Event::Text(text) if current.is_some() => {
-                current.as_mut().unwrap().1.push_str(text);
-                None
+            block => {
+                prose.push(block);
+                continue;
             }
-            Event::End(TagEnd::CodeBlock) if current.is_some() => {
-                let (range, source) = current.take().unwrap();
-                chunks.push(Chunk::Text(&md[last..range.start]));
-                chunks.push(Chunk::Mermaid {
-                    raw: &md[range.clone()],
-                    source,
-                });
-                last = range.end;
-                None
-            }
-            _ => None,
         };
-        if let Some(chunk) = boxed {
-            chunks.push(Chunk::Text(&md[last..range.start]));
-            chunks.push(chunk);
-            (last, boxed_until) = (range.end, range.end);
-            continue;
+        if !prose.is_empty() {
+            chunks.push(Chunk::Prose(std::mem::take(&mut prose)));
         }
-        match event {
-            Event::Start(_) => depth += 1,
-            Event::End(_) => depth -= 1,
-            _ => {}
-        }
+        chunks.push(chunk);
     }
-    chunks.push(Chunk::Text(&md[last..]));
+    if !prose.is_empty() {
+        chunks.push(Chunk::Prose(prose));
+    }
     chunks
 }
 
-fn alert_kind(kind: BlockQuoteKind) -> AlertKind {
+fn alert_kind(kind: AdmonitionKind) -> AlertKind {
     match kind {
-        BlockQuoteKind::Note => AlertKind::Note,
-        BlockQuoteKind::Tip => AlertKind::Tip,
-        BlockQuoteKind::Important => AlertKind::Important,
-        BlockQuoteKind::Warning => AlertKind::Warning,
-        BlockQuoteKind::Caution => AlertKind::Caution,
+        AdmonitionKind::Note => AlertKind::Note,
+        AdmonitionKind::Tip => AlertKind::Tip,
+        AdmonitionKind::Important => AlertKind::Important,
+        AdmonitionKind::Warning => AlertKind::Warning,
+        AdmonitionKind::Caution => AlertKind::Caution,
     }
 }
 
-/// `md` rendered at `width - 4` and framed as text lines in a rounded box, titled
+/// Blocks as styled text in the theme's colors, through tui-markdown. It only shows a
+/// footnote reference as one when the definition is in the same text, and a chunk's
+/// definitions are often in a later chunk: a stand-in definition is added for each,
+/// and its lines dropped again.
+pub fn render(blocks: &[Block], theme: &Theme) -> Text<'static> {
+    let (mut refs, mut defs) = (Vec::<String>::new(), Vec::new());
+    document::visit(blocks, &mut |node| match node {
+        Node::Inline(Inline::FootnoteRef(label)) => refs.push(label.to_lowercase()),
+        Node::Block(Block::Footnote { label, .. }) => defs.push(label.to_lowercase()),
+        _ => {}
+    });
+    let mut missing: Vec<String> = Vec::new();
+    for label in refs {
+        if !defs.contains(&label) && !missing.contains(&label) {
+            missing.push(label);
+        }
+    }
+    let mut md = markdown::write(blocks);
+    for label in &missing {
+        md.push_str(&format!("\n[^{label}]: -\n"));
+    }
+    let mut text = markdown(&md, theme);
+    // tui-markdown starts a definition with a blank line, then `[label]: `.
+    if let Some(first) = missing.first() {
+        let start = format!("[{first}]: ");
+        if let Some(i) = text
+            .lines
+            .iter()
+            .position(|l| l.spans.first().is_some_and(|s| s.content == start))
+        {
+            text.lines.truncate(i);
+            if text.lines.last().is_some_and(|l| l.width() == 0) {
+                text.lines.pop();
+            }
+        }
+    }
+    text
+}
+
+/// `body` rendered at `width - 4` and framed as text lines in a rounded box, titled
 /// `title` and colored by `alert` (muted when `None`). Plain lines rather than a
 /// bordered widget, so the box scrolls, searches and wraps like any other text.
 pub fn boxed(
-    md: &str,
+    body: &[Block],
     title: &str,
     alert: Option<AlertKind>,
     theme: &Theme,
     width: u16,
 ) -> Text<'static> {
-    let text = markdown(md, theme);
+    let text = render(body, theme);
     if width < 8 {
         return text;
     }
@@ -210,7 +207,7 @@ pub fn boxed(
 }
 
 /// Styled markdown text (no diagrams) in the theme's colors.
-pub fn markdown(md: &str, theme: &Theme) -> Text<'static> {
+fn markdown(md: &str, theme: &Theme) -> Text<'static> {
     let options = tui_markdown::Options::new(theme.clone()).code_theme(theme.code());
     let text = tui_markdown::from_str_with_options(md, &options);
     let lines = text.lines.into_iter().map(|l| {
@@ -286,17 +283,59 @@ pub fn diagram(
 mod tests {
     use super::*;
 
+    fn split(md: &str) -> Vec<Chunk> {
+        chunks(markdown::parse(md))
+    }
+
+    /// `boxed`, for a box of markdown.
+    fn boxed_md(
+        md: &str,
+        title: &str,
+        alert: Option<AlertKind>,
+        t: &Theme,
+        w: u16,
+    ) -> Text<'static> {
+        boxed(&markdown::parse(md), title, alert, t, w)
+    }
+
     #[test]
     fn splits_mermaid_blocks_in_order() {
         let md = "# Hi\n\n```mermaid\ngraph TD\nA-->B\n```\n\n```rust\nfn x() {}\n```\n\nbye\n";
         let chunks = split(md);
-        assert_eq!(chunks.len(), 5);
-        assert!(matches!(chunks[0], Chunk::Text(t) if t == "# Hi\n\n"));
+        assert_eq!(chunks.len(), 4);
+        assert!(matches!(&chunks[0], Chunk::Prose(b) if *b == markdown::parse("# Hi")));
         assert!(
-            matches!(&chunks[1], Chunk::Mermaid { source, .. } if source == "graph TD\nA-->B\n")
+            matches!(&chunks[1], Chunk::Mermaid { lang, source } if lang == "mermaid" && source == "graph TD\nA-->B\n")
         );
-        assert!(matches!(&chunks[3], Chunk::Boxed { title, alert: None, .. } if title == "rust"));
-        assert!(matches!(chunks[4], Chunk::Text(t) if t.ends_with("bye\n")));
+        assert!(matches!(&chunks[2], Chunk::Boxed { title, alert: None, .. } if title == "rust"));
+        assert!(matches!(&chunks[3], Chunk::Prose(b) if *b == markdown::parse("bye")));
+    }
+
+    #[test]
+    fn footnotes_and_reference_links_reach_across_boxes() {
+        let t = Theme::dracula();
+        let md = "See [the docs][d] and a note[^1].\n\n```sh\nls\n```\n\n[d]: https://example.com\n[^1]: The footnote.\n";
+        let chunks = split(md);
+        let (Chunk::Prose(first), Chunk::Prose(last)) = (&chunks[0], &chunks[2]) else {
+            panic!("prose, box, prose")
+        };
+        let text = render(first, &t);
+        assert_eq!(
+            rows(&text),
+            ["See the docs (https://example.com) and a note[1]."],
+            "no stand-in left"
+        );
+        let note = text.lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content == "[1]")
+            .unwrap();
+        assert_eq!(
+            note.style.fg,
+            Some(theme::color(t.info)),
+            "styled as a footnote reference"
+        );
+        assert_eq!(rows(&render(last, &t)), ["[1]: The footnote."]);
     }
 
     #[test]
@@ -327,11 +366,11 @@ mod tests {
         assert_eq!(span("main").fg, rgb(t.function)); // function name
     }
 
-    fn boxes(md: &str) -> Vec<(String, String, Option<AlertKind>)> {
+    fn boxes(md: &str) -> Vec<(Document, String, Option<AlertKind>)> {
         split(md)
             .into_iter()
             .filter_map(|c| match c {
-                Chunk::Boxed { md, title, alert } => Some((md, title, alert)),
+                Chunk::Boxed { body, title, alert } => Some((body, title, alert)),
                 _ => None,
             })
             .collect()
@@ -358,7 +397,7 @@ mod tests {
             assert_eq!(
                 found,
                 vec![(
-                    "Body text.".to_string(),
+                    markdown::parse("Body text."),
                     kind.label().to_string(),
                     Some(kind)
                 )],
@@ -377,8 +416,11 @@ mod tests {
             1,
             "the inner code block is not boxed separately"
         );
-        assert_eq!(found[0].0, "First.\nlazy continuation\n\n```sh\nls\n```");
-        assert!(matches!(chunks.last(), Some(Chunk::Text(t)) if t.trim() == "After."));
+        assert_eq!(
+            found[0].0,
+            markdown::parse("First.\nlazy continuation\n\n```sh\nls\n```")
+        );
+        assert!(matches!(chunks.last(), Some(Chunk::Prose(b)) if *b == markdown::parse("After.")));
     }
 
     #[test]
@@ -395,14 +437,23 @@ mod tests {
             ("", None),
             "indented code has no title"
         );
-        assert!(found[0].0.contains("indented code"));
-        assert!(matches!(&split(md)[0], Chunk::Text(t) if t.contains("```rust")));
+        assert_eq!(found[0].0, markdown::parse("    indented code\n"));
+        let Chunk::Prose(text) = &split(md)[0] else {
+            panic!("prose first")
+        };
+        assert!(
+            matches!(
+                text[..],
+                [Block::Quote(_), Block::List(_), Block::Paragraph(_)]
+            ),
+            "the quote, the list with its code block, and the paragraph: {text:?}"
+        );
     }
 
     #[test]
     fn box_rows_are_equal_width_and_fit_the_widest_line() {
         let t = Theme::dracula();
-        let text = boxed(
+        let text = boxed_md(
             "```rust\nfn main() {}\nlet longer_line = 1;\n```\n",
             "rust",
             None,
@@ -431,7 +482,7 @@ mod tests {
     #[test]
     fn box_widens_for_its_title_and_wraps_at_the_terminal() {
         let t = Theme::dracula();
-        let narrow = boxed("x", "Important", Some(AlertKind::Important), &t, 60);
+        let narrow = boxed_md("x", "Important", Some(AlertKind::Important), &t, 60);
         let frame = &narrow.lines[1..narrow.lines.len() - 1];
         assert!(frame.iter().all(|l| l.width() == frame[0].width()));
         assert_eq!(
@@ -440,7 +491,7 @@ mod tests {
             "title fits exactly"
         );
 
-        let long = boxed(&"word ".repeat(40), "Tip", Some(AlertKind::Tip), &t, 40);
+        let long = boxed_md(&"word ".repeat(40), "Tip", Some(AlertKind::Tip), &t, 40);
         let frame = &long.lines[1..long.lines.len() - 1];
         assert!(frame.len() > 3, "long text wraps onto several rows");
         assert!(frame.iter().all(|l| l.width() <= 40));
@@ -449,7 +500,7 @@ mod tests {
     #[test]
     fn box_aligns_wide_characters() {
         let t = Theme::dracula();
-        let text = boxed("猫猫 cat\nascii only line", "", None, &t, 60);
+        let text = boxed_md("猫猫 cat\nascii only line", "", None, &t, 60);
         let frame = &text.lines[1..text.lines.len() - 1];
         assert!(
             frame.iter().all(|l| l.width() == frame[0].width()),
@@ -462,10 +513,10 @@ mod tests {
     fn box_edge_cases() {
         let t = Theme::dracula();
         // Too narrow for a frame: plain text.
-        let plain = boxed("hello", "Note", Some(AlertKind::Note), &t, 7);
+        let plain = boxed_md("hello", "Note", Some(AlertKind::Note), &t, 7);
         assert!(!rows(&plain).iter().any(|r| r.contains('╭')));
         // An empty code block still gets a well-formed frame.
-        let empty = boxed("```\n```\n", "", None, &t, 60);
+        let empty = boxed_md("```\n```\n", "", None, &t, 60);
         let frame = &empty.lines[1..empty.lines.len() - 1];
         assert!(
             frame.iter().all(|l| l.width() == frame[0].width()),
@@ -504,7 +555,7 @@ mod tests {
     fn box_keeps_syntax_highlighting_and_colors_the_border() {
         use ratatui::style::Color;
         let t = Theme::dracula();
-        let text = boxed(
+        let text = boxed_md(
             "```rust\nfn main() {}\n```\n",
             "rust",
             Some(AlertKind::Warning),

@@ -118,3 +118,52 @@ pub enum Inline {
     SoftBreak,
     HardBreak,
 }
+
+/// A block or an inline, as [`visit`] hands them out.
+pub enum Node<'a> {
+    Block(&'a Block),
+    Inline(&'a Inline),
+}
+
+/// Calls `f` on every block and inline in `blocks`, nested ones included, each
+/// before what it contains.
+pub fn visit<'a>(blocks: &'a [Block], f: &mut impl FnMut(Node<'a>)) {
+    for block in blocks {
+        f(Node::Block(block));
+        match block {
+            Block::Heading { content, .. } | Block::Paragraph(content) => visit_inlines(content, f),
+            Block::List(list) => list.items.iter().for_each(|item| visit(&item.body, f)),
+            Block::Quote(body) | Block::Admonition { body, .. } | Block::Footnote { body, .. } => {
+                visit(body, f)
+            }
+            Block::Table(table) => table
+                .head
+                .iter()
+                .chain(table.rows.iter().flatten())
+                .for_each(|cell| visit_inlines(cell, f)),
+            Block::Definitions(definitions) => {
+                for d in definitions {
+                    visit_inlines(&d.term, f);
+                    d.details.iter().for_each(|body| visit(body, f));
+                }
+            }
+            Block::Code { .. } | Block::Metadata(_) | Block::Html(_) | Block::Rule => {}
+        }
+    }
+}
+
+fn visit_inlines<'a>(content: &'a [Inline], f: &mut impl FnMut(Node<'a>)) {
+    for inline in content {
+        f(Node::Inline(inline));
+        match inline {
+            Inline::Emphasis(c)
+            | Inline::Strong(c)
+            | Inline::Strikethrough(c)
+            | Inline::Superscript(c)
+            | Inline::Subscript(c)
+            | Inline::Link { content: c, .. }
+            | Inline::Image { alt: c, .. } => visit_inlines(c, f),
+            _ => {}
+        }
+    }
+}
