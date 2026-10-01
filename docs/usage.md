@@ -32,7 +32,8 @@ diagram source in a box. If it guesses wrong, use `--images` or `--no-images`.
 ## Printing
 
 When its output goes to a pipe or a file instead of the terminal, yamdview
-prints the rendered document as plain text and exits, like `git log` does:
+prints the rendered document as plain text and exits, like `git log` does. Links
+keep their URL in parentheses there, since nothing can click them:
 
 ```sh
 yamdview notes.md | grep TODO
@@ -81,6 +82,18 @@ Search is literal and case-sensitive, and it works one displayed line at a
 time. A phrase that wraps onto the next line won't match, and text inside
 diagrams can't be searched.
 
+## Links
+
+Links show as their underlined text, without the URL, and the terminal can open
+them: yamdview sends them as OSC 8 hyperlinks, which kitty, Ghostty, WezTerm,
+iTerm2 and foot support, among others. In other terminals, links are just
+underlined text.
+
+yamdview reads the mouse, so a plain click goes to it, not to the terminal. Hold
+Shift, which most terminals use to bypass an application's mouse handling, along
+with your terminal's link modifier if it has one. Or run `yamdview --no-mouse`,
+and the terminal gets every click.
+
 ## Mouse and tmux
 
 Outside tmux, the wheel scrolls the document. To select text, drag while
@@ -93,12 +106,17 @@ clipboard, which works if your tmux `set-clipboard` setting and your terminal
 allow it. Diagram placeholders are left out of copied text. Scrolling, typing,
 resizing or a reload clears the selection.
 
-tmux needs two settings in `~/.tmux.conf`:
+tmux needs two settings in `~/.tmux.conf`, and a third for clickable links
+(tmux 3.4 or later):
 
 ```sh
 set -g mouse on              # send mouse events to yamdview
 set -g allow-passthrough on  # let diagram images through to the terminal
+set -as terminal-features ",*:hyperlinks"  # pass links on to the terminal
 ```
+
+tmux reads `terminal-features` when a client attaches: detach and reattach
+after adding it.
 
 See the tmux wiki on
 [mouse support](https://github.com/tmux/tmux/wiki/Getting-Started#using-the-mouse).

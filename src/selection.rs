@@ -57,7 +57,7 @@ impl Selection {
                 if x < covered {
                     continue;
                 }
-                let symbol = buffer[(x, y)].symbol();
+                let symbol = yamdview::link::visible(buffer[(x, y)].symbol());
                 let width = ratatui::text::Span::raw(symbol).width().max(1) as u16;
                 covered = x.saturating_add(width);
                 if (x..covered).any(|col| self.contains(col, y)) {
@@ -118,5 +118,20 @@ mod tests {
         assert_eq!(selection.text(&buffer), "");
         selection.start(0, 0);
         assert_eq!(selection.text(&buffer), "");
+    }
+
+    #[test]
+    fn copies_links_as_their_text() {
+        let mut buffer = Buffer::with_lines(["go 猫 here"]);
+        for x in 3..5 {
+            buffer[(x, 0)].underline_color = ratatui::style::Color::Rgb(0, 0, 1);
+        }
+        let area = buffer.area;
+        yamdview::link::apply(&mut buffer, area, &["https://x".to_string()]);
+        assert!(buffer[(3, 0)].symbol().starts_with("\x1b]8;;"));
+        let mut selection = Selection::default();
+        selection.start(0, 0);
+        selection.drag(9, 0);
+        assert_eq!(selection.text(&buffer), "go 猫 here");
     }
 }
