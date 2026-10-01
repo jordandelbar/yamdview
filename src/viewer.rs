@@ -149,11 +149,26 @@ impl Viewer {
         }
     }
 
-    /// Re-read the file (or reuse stdin) and re-render everything for the current terminal size.
-    pub fn rebuild(&mut self, out: &mut impl Write, width: u16) -> std::io::Result<()> {
+    /// Delete the uploaded diagrams from the terminal.
+    pub fn free_images(&mut self, out: &mut impl Write) -> std::io::Result<()> {
         for id in self.ids.drain(..) {
             kitty(out, &format!("a=d,d=I,i={id},q=2"), self.tmux)?;
         }
+        Ok(())
+    }
+
+    /// The file changed since the last `rebuild`. Never for stdin.
+    pub fn changed_on_disk(&self) -> bool {
+        self.stdin.is_none()
+            && std::fs::metadata(&self.path)
+                .and_then(|m| m.modified())
+                .ok()
+                != self.mtime
+    }
+
+    /// Re-read the file (or reuse stdin) and re-render everything for the current terminal size.
+    pub fn rebuild(&mut self, out: &mut impl Write, width: u16) -> std::io::Result<()> {
+        self.free_images(out)?;
         let md = match &self.stdin {
             Some(md) => md.clone(),
             None => {
@@ -233,7 +248,7 @@ impl Viewer {
                 self.blocks.push(Block::Text(Box::new(p), h));
             }
         }
-        if self.search.editing || !self.search.query.is_empty() {
+        if self.search.active() {
             self.cache_search(width);
         }
         self.search.refresh();
@@ -288,7 +303,7 @@ impl Viewer {
 
     pub fn draw(&self, frame: &mut Frame) {
         let full = frame.area();
-        let status = self.search.editing || !self.search.query.is_empty();
+        let status = self.search.active();
         let area = Rect {
             height: full.height.saturating_sub(u16::from(status)),
             ..full

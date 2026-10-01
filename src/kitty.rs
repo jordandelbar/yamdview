@@ -3,7 +3,10 @@
 use crate::diacritics::DIACRITICS;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use ratatui::{buffer::Buffer, style::Color};
-use std::io::Write;
+use std::{
+    io::Write,
+    process::{Command, Stdio},
+};
 
 /// Kitty graphics escape, wrapped for tmux passthrough (`allow-passthrough on`) when needed.
 pub fn kitty(out: &mut impl Write, body: &str, tmux: bool) -> std::io::Result<()> {
@@ -66,6 +69,35 @@ pub fn placeholder(r: usize, c: usize) -> String {
 pub fn png_size(png: &[u8]) -> (u32, u32) {
     let be = |i: usize| u32::from_be_bytes(png[i..i + 4].try_into().unwrap());
     (be(16), be(20))
+}
+
+/// `supports_images` for this process's terminal, asking tmux for the outer one.
+pub fn detect_images(tmux: bool) -> bool {
+    let tmux_client = tmux
+        .then(|| {
+            Command::new("tmux")
+                .args(["display-message", "-p", "#{client_termname}"])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .filter(|t| !t.is_empty())
+        })
+        .flatten();
+    supports_images(|k| std::env::var(k).ok(), tmux_client)
+}
+
+/// Ghostty <= 1.3.1 loses the placeholders' row diacritics when they arrive as incremental
+/// tmux pane updates, so every row shows image row 0. A full client repaint fixes it.
+/// Best effort and silent: with no client attached (a detached session), tmux's error
+/// would land on our screen and shift it.
+/// ponytail: drop once Ghostty handles incremental placeholder updates.
+pub fn refresh_tmux() {
+    let _ = Command::new("tmux")
+        .arg("refresh-client")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 /// Whether the terminal can show kitty images through Unicode placeholders: kitty and
