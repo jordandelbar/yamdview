@@ -1,0 +1,669 @@
+//! The rendered document: laid out in blocks, scrolled, searched, drawn or printed.
+
+use crate::diacritics::DIACRITICS;
+use crate::kitty::{image_cells, kitty, png_size, upload};
+use crate::search;
+use ratatui::{
+    Frame,
+    backend::IntoCrossterm,
+    buffer::Buffer,
+    crossterm::{queue, style::PrintStyledContent, terminal::window_size},
+    layout::Rect,
+    style::{Color, Style, Stylize},
+    text::{Line, Span, Text},
+    widgets::{Paragraph, Widget, Wrap},
+};
+use std::{io::Write, path::PathBuf, time::SystemTime};
+use yamdview::{Chunk, Theme, boxed, diagram, is_heading, markdown, split};
+
+/// One buffer row as a line of output: plain text, or styled runs of cells.
+/// Trailing blank cells are dropped; a wide character's covered cells are skipped.
+pub fn print_row(out: &mut impl Write, buf: &Buffer, y: u16, styled: bool) -> std::io::Result<()> {
+    let mut cells = Vec::new();
+    let mut x = 0;
+    while x < buf.area.width {
+        let cell = &buf[(x, y)];
+        x += (Span::raw(cell.symbol()).width() as u16).max(1);
+        cells.push((cell.symbol(), cell.style()));
+    }
+    let blank = |(symbol, style): &(&str, Style)| {
+        *symbol == " " && style.bg.is_none_or(|bg| bg == Color::Reset)
+    };
+    let end = cells.iter().rposition(|c| !blank(c)).map_or(0, |i| i + 1);
+    let mut cells = cells[..end].iter().peekable();
+    while let Some(&(symbol, style)) = cells.next() {
+        let mut run = symbol.to_string();
+        while let Some(&&(next, _)) = cells.peek().filter(|(_, s)| *s == style) {
+            run.push_str(next);
+            cells.next();
+        }
+        if styled {
+            queue!(out, PrintStyledContent(style.into_crossterm().apply(run)))?;
+        } else {
+            out.write_all(run.as_bytes())?;
+        }
+    }
+    out.write_all(b"\n")
+}
+
+enum Block {
+    // u16 height: ratatui scrolls a Paragraph by u16 rows, see `paragraphs`.
+    Text(Box<Paragraph<'static>>, u16),
+    Image { id: u32, cols: u16, rows: u16 },
+}
+
+impl Block {
+    pub fn height(&self) -> u32 {
+        match self {
+            Block::Text(_, h) => u32::from(*h),
+            Block::Image { rows, .. } => u32::from(*rows) + 1, // one blank row below each diagram
+        }
+    }
+}
+
+/// Wrap `text` into paragraphs of about 1024 rows, split between source lines (wrapping
+/// is per line, so rows add up exactly). ratatui scrolls a Paragraph by u16 rows, and
+/// small blocks keep per-frame clones and search layout cheap. Each block comes with
+/// the rows, within it, where the lines matching `heading` start.
+pub fn paragraphs(
+    text: Text<'static>,
+    width: u16,
+    heading: impl Fn(&Line) -> bool,
+) -> Vec<(Paragraph<'static>, u16, Vec<u16>)> {
+    let Text {
+        lines,
+        style,
+        alignment,
+    } = text;
+    // ponytail: one source line wrapping past 65535 rows (~5 MB at 80 columns) is cut there.
+    let clamp = |rows: usize| u16::try_from(rows).unwrap_or(u16::MAX);
+    let block = |lines, rows: usize, heads| {
+        let p = Paragraph::new(Text {
+            lines,
+            style,
+            alignment,
+        })
+        .wrap(Wrap { trim: false });
+        (p, clamp(rows), heads)
+    };
+    let (mut out, mut chunk, mut rows, mut heads) = (Vec::new(), Vec::new(), 0, Vec::new());
+    for line in lines {
+        let n = Paragraph::new(line.clone())
+            .wrap(Wrap { trim: false })
+            .line_count(width);
+        if rows + n > 1024 && !chunk.is_empty() {
+            out.push(block(
+                std::mem::take(&mut chunk),
+                rows,
+                std::mem::take(&mut heads),
+            ));
+            rows = 0;
+        }
+        if heading(&line) {
+            heads.push(clamp(rows));
+        }
+        rows += n;
+        chunk.push(line);
+    }
+    out.push(block(chunk, rows, heads));
+    out
+}
+
+pub struct Viewer {
+    pub path: PathBuf,
+    /// Document rows where headings start, in order, for `[` and `]`.
+    headings: Vec<u32>,
+    /// Markdown piped in on stdin. Replaces the file, and there's nothing to watch.
+    pub stdin: Option<String>,
+    pub mtime: Option<SystemTime>,
+    blocks: Vec<Block>,
+    pub ids: Vec<u32>,
+    pub scroll: u32,
+    pub tmux: bool,
+    /// Draw diagrams as images; without kitty graphics they show as boxed source.
+    pub images: bool,
+    pub theme: Theme,
+    pub search: search::Search,
+}
+
+impl Viewer {
+    pub fn new(
+        path: PathBuf,
+        stdin: Option<String>,
+        tmux: bool,
+        images: bool,
+        theme: Theme,
+    ) -> Self {
+        Viewer {
+            path,
+            headings: Vec::new(),
+            stdin,
+            mtime: None,
+            blocks: Vec::new(),
+            ids: Vec::new(),
+            scroll: 0,
+            tmux,
+            images,
+            theme,
+            search: search::Search::default(),
+        }
+    }
+
+    /// Delete the uploaded diagrams from the terminal.
+    pub fn free_images(&mut self, out: &mut impl Write) -> std::io::Result<()> {
+        for id in self.ids.drain(..) {
+            kitty(out, &format!("a=d,d=I,i={id},q=2"), self.tmux)?;
+        }
+        Ok(())
+    }
+
+    /// The file changed since the last `rebuild`. Never for stdin.
+    pub fn changed_on_disk(&self) -> bool {
+        self.stdin.is_none()
+            && std::fs::metadata(&self.path)
+                .and_then(|m| m.modified())
+                .ok()
+                != self.mtime
+    }
+
+    /// Re-read the file (or reuse stdin) and re-render everything for the current terminal size.
+    pub fn rebuild(&mut self, out: &mut impl Write, width: u16) -> std::io::Result<()> {
+        self.free_images(out)?;
+        let md = match &self.stdin {
+            Some(md) => md.clone(),
+            None => {
+                self.mtime = std::fs::metadata(&self.path)
+                    .and_then(|m| m.modified())
+                    .ok();
+                std::fs::read_to_string(&self.path)?
+            }
+        };
+
+        // ponytail: assumes 10x20px cells if the terminal won't report pixel size.
+        let cell = window_size()
+            .ok()
+            .filter(|w| w.width > 0 && w.height > 0 && w.columns > 0 && w.rows > 0)
+            .map_or((10, 20), |w| {
+                (u32::from(w.width / w.columns), u32::from(w.height / w.rows))
+            });
+        let max = DIACRITICS.len() as u32;
+
+        self.blocks.clear();
+        self.headings.clear();
+        self.search.clear_layout();
+        let mut after_box = false;
+        for chunk in split(&md) {
+            if matches!(chunk, Chunk::Text(t) if t.trim().is_empty()) {
+                continue;
+            }
+            let chunk = match chunk {
+                Chunk::Mermaid { raw, .. } if !self.images => Chunk::Boxed {
+                    md: raw.to_string(),
+                    title: "mermaid".to_string(),
+                    alert: None,
+                },
+                chunk => chunk,
+            };
+            // Boxes carry a blank line on each side; two in a row share one.
+            let prev_box = std::mem::replace(&mut after_box, matches!(chunk, Chunk::Boxed { .. }));
+            let text = match chunk {
+                Chunk::Text(t) => markdown(t, &self.theme),
+                Chunk::Boxed { md, title, alert } => {
+                    let mut text = boxed(&md, &title, alert, &self.theme, width);
+                    if prev_box {
+                        text.lines.remove(0);
+                    }
+                    text
+                }
+                Chunk::Mermaid { raw, source } => {
+                    match diagram(&source, &self.theme, u32::from(width) * cell.0, cell.1) {
+                        Ok(Some(png)) => {
+                            let (w, h) = png_size(&png);
+                            let (cols, rows) = (
+                                w.div_ceil(cell.0).min(max) as u16,
+                                h.div_ceil(cell.1).min(max) as u16,
+                            );
+                            // 24-bit id (sent as a truecolor fg): pid keeps viewers in other panes apart.
+                            let id =
+                                (std::process::id() & 0xffff) << 8 | (self.ids.len() as u32 + 1);
+                            upload(out, id, &png, cols, rows, self.tmux)?;
+                            self.ids.push(id);
+                            self.blocks.push(Block::Image { id, cols, rows });
+                            continue;
+                        }
+                        // Unsupported or invalid diagram: show the source instead.
+                        Ok(None) => markdown(raw, &self.theme),
+                        Err(e) => {
+                            let mut t = markdown(raw, &self.theme);
+                            t.push_line(Line::from(format!("mermaid render failed: {e}")).red());
+                            t
+                        }
+                    }
+                }
+            };
+            for (p, h, heads) in paragraphs(text, width, |line| is_heading(line, &self.theme)) {
+                let offset = self.total();
+                self.headings
+                    .extend(heads.into_iter().map(|row| offset + u32::from(row)));
+                self.blocks.push(Block::Text(Box::new(p), h));
+            }
+        }
+        if self.search.active() {
+            self.cache_search(width);
+        }
+        self.search.refresh();
+        out.flush()
+    }
+
+    /// Lay out the text for search on first use; `rebuild` drops the cache.
+    pub fn cache_search(&mut self, width: u16) {
+        if self.search.cached() {
+            return;
+        }
+        let mut offset = 0;
+        for block in &self.blocks {
+            if let Block::Text(p, h) = block {
+                self.search.cache(p, width, *h, offset);
+            }
+            offset += block.height();
+        }
+    }
+
+    /// The first heading below row `from`, or with `backwards` the last one above it.
+    pub fn heading(&self, from: u32, backwards: bool) -> Option<u32> {
+        if backwards {
+            self.headings.iter().rev().find(|&&row| row < from).copied()
+        } else {
+            self.headings.iter().find(|&&row| row > from).copied()
+        }
+    }
+
+    /// Render the whole document once to `out`, for pipes, files and tmux's history:
+    /// `styled` keeps colors, attributes and diagrams (as placeholders), else plain text.
+    pub fn print(&mut self, out: &mut impl Write, width: u16, styled: bool) -> std::io::Result<()> {
+        self.rebuild(out, width)?;
+        for block in &self.blocks {
+            // Text blocks stay under u16 rows, and images under DIACRITICS.len() + 1.
+            let area = Rect::new(0, 0, width, block.height() as u16);
+            let mut buf = Buffer::empty(area);
+            match block {
+                Block::Text(p, _) => Paragraph::clone(p).render(area, &mut buf),
+                Block::Image { id, cols, rows } => image_cells(&mut buf, *id, *cols, 0..*rows, 0),
+            }
+            for y in 0..area.height {
+                print_row(out, &buf, y, styled)?;
+            }
+        }
+        out.flush()
+    }
+
+    pub fn total(&self) -> u32 {
+        self.blocks.iter().map(Block::height).sum()
+    }
+
+    pub fn draw(&self, frame: &mut Frame) {
+        let full = frame.area();
+        let status = self.search.active();
+        let area = Rect {
+            height: full.height.saturating_sub(u16::from(status)),
+            ..full
+        };
+        let mut y = -i64::from(self.scroll); // top of the current block, relative to the screen
+        for block in &self.blocks {
+            let h = i64::from(block.height());
+            if y + h > 0 && y < i64::from(area.height) {
+                // Both fit in u16 once the block is on screen: skip < h, top < area.height.
+                let skip = (-y).max(0) as u16; // rows of this block scrolled off the top
+                let top = y.max(0) as u16;
+                let rows = (y + h).min(i64::from(area.height)) as u16 - top;
+                match block {
+                    Block::Text(p, _) => {
+                        frame.render_widget(
+                            Paragraph::clone(p).scroll((skip, 0)),
+                            Rect::new(0, top, area.width, rows),
+                        );
+                    }
+                    // Placeholders make scrolling free: each cell names its own image row.
+                    Block::Image {
+                        id,
+                        cols,
+                        rows: img_rows,
+                    } => {
+                        let rows = skip..(skip + rows).min(*img_rows);
+                        image_cells(frame.buffer_mut(), *id, (*cols).min(area.width), rows, top);
+                    }
+                }
+            }
+            y += h;
+        }
+        for (index, hit) in self.search.hits.iter().enumerate() {
+            if hit.row < self.scroll || hit.row - self.scroll >= u32::from(area.height) {
+                continue;
+            }
+            let y = (hit.row - self.scroll) as u16;
+            for x in hit.start..hit.end.min(area.width) {
+                let cell = &mut frame.buffer_mut()[(x, y)];
+                cell.set_bg(yamdview::theme::color(self.theme.selection));
+                if self.search.current == Some(index) {
+                    cell.set_fg(yamdview::theme::color(self.theme.accent));
+                }
+            }
+        }
+        if status && full.height > 0 {
+            let count = if self.search.hits.is_empty() {
+                "no matches".to_string()
+            } else {
+                format!(
+                    "{}/{}",
+                    self.search.current.map_or(0, |i| i + 1),
+                    self.search.hits.len()
+                )
+            };
+            let prompt = if self.search.query.is_empty() {
+                "/".to_string()
+            } else {
+                format!("/{}  [{}]", self.search.query, count)
+            };
+            frame.render_widget(
+                Paragraph::new(prompt),
+                Rect::new(0, full.height - 1, full.width, 1),
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_skips_images_and_highlights_text_above_status() {
+        let mut viewer = Viewer::new(PathBuf::new(), None, false, true, Theme::dracula());
+        viewer.blocks = vec![
+            Block::Image {
+                id: 1,
+                cols: 2,
+                rows: 3,
+            },
+            Block::Text(Box::new(Paragraph::new("target target")), 1),
+        ];
+        viewer.scroll = 3;
+        viewer.search.query = "target".into();
+        viewer.cache_search(20);
+        viewer.search.refresh();
+        assert_eq!(viewer.search.hits.len(), 2);
+        assert_eq!(viewer.search.jump(0, false), Some(4));
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 3)).unwrap();
+        terminal.draw(|frame| viewer.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 1)].symbol(), "t");
+        assert_eq!(
+            buffer[(0, 1)].bg,
+            yamdview::theme::color(viewer.theme.selection)
+        );
+        assert_eq!(buffer[(0, 2)].symbol(), "/");
+        viewer.search.cancel();
+        assert!(viewer.search.hits.is_empty());
+        assert_eq!(viewer.search.current, None);
+        assert!(!viewer.search.cached());
+    }
+
+    #[test]
+    fn documents_past_u16_rows_split_scroll_and_search() {
+        let path = std::env::temp_dir().join(format!("yamdview-test-{}.md", std::process::id()));
+        let md: String = (0..70_000).map(|i| format!("row{i}\n\n")).collect();
+        std::fs::write(&path, md).unwrap();
+        let mut viewer = Viewer::new(path.clone(), None, false, true, Theme::dracula());
+        viewer.rebuild(&mut Vec::new(), 10).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(viewer.total() > u32::from(u16::MAX));
+        assert!(viewer.blocks.len() > 1);
+        assert!(!viewer.search.cached());
+
+        viewer.search.query = "row69999".into();
+        viewer.cache_search(10);
+        viewer.search.refresh();
+        let row = viewer.search.jump(0, false).unwrap();
+        assert!(row > u32::from(u16::MAX));
+        viewer.scroll = row;
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(10, 3)).unwrap();
+        terminal.draw(|frame| viewer.draw(frame)).unwrap();
+        let top: String = (0..8)
+            .map(|x| terminal.backend().buffer()[(x, 0)].symbol().to_string())
+            .collect();
+        assert_eq!(top, "row69999");
+    }
+
+    #[test]
+    fn heading_rows_are_relative_to_their_block() {
+        let mut lines: Vec<Line> = (0..1500).map(|_| Line::from("x")).collect();
+        lines[1100] = Line::from("H");
+        let blocks = paragraphs(Text::from(lines), 10, |l| {
+            l.spans.first().is_some_and(|s| s.content == "H")
+        });
+        assert_eq!(blocks.len(), 2);
+        assert_eq!((blocks[0].1, blocks[0].2.as_slice()), (1024, &[][..]));
+        assert_eq!(blocks[1].2, [1100 - 1024], "offset within the second block");
+    }
+
+    #[test]
+    fn single_line_past_u16_rows_is_cut_off() {
+        let blocks = paragraphs(Text::from("x ".repeat(70_000)), 1, |_| false);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].1, u16::MAX);
+    }
+
+    #[test]
+    fn consecutive_boxes_share_one_blank_line() {
+        let path = std::env::temp_dir().join(format!("yamdview-boxes-{}.md", std::process::id()));
+        std::fs::write(
+            &path,
+            "Intro.\n\n> [!NOTE]\n> a\n\n> [!TIP]\n> b\n\nOutro.\n",
+        )
+        .unwrap();
+        let mut viewer = Viewer::new(path.clone(), None, false, true, Theme::dracula());
+        viewer.rebuild(&mut Vec::new(), 40).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let height = viewer.total() as u16;
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, height)).unwrap();
+        terminal.draw(|frame| viewer.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let rows: Vec<String> = (0..height)
+            .map(|y| {
+                (0..40)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect();
+        let first = |c: char| rows.iter().position(|r| r.starts_with(c)).unwrap();
+        let tip_top = rows.iter().position(|r| r.starts_with("╭─ Tip")).unwrap();
+        assert_eq!(
+            rows[first('╭') - 1],
+            "",
+            "blank line above the first box: {rows:#?}"
+        );
+        assert_eq!(
+            tip_top - first('╰'),
+            2,
+            "one blank line between the boxes: {rows:#?}"
+        );
+        assert_eq!(
+            rows[rows.len() - 2],
+            "",
+            "blank line before the outro: {rows:#?}"
+        );
+    }
+
+    #[test]
+    fn renders_stdin_without_a_file() {
+        let mut viewer = Viewer::new(
+            PathBuf::from("-"),
+            Some("# Piped\n\nfrom a pipe\n".into()),
+            false,
+            true,
+            Theme::dracula(),
+        );
+        viewer.rebuild(&mut Vec::new(), 30).unwrap();
+        assert_eq!(viewer.mtime, None, "nothing to watch");
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 4)).unwrap();
+        terminal.draw(|frame| viewer.draw(frame)).unwrap();
+        let rows: Vec<String> = (0..4)
+            .map(|y| {
+                (0..30)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(rows[0], "Piped");
+        assert!(rows.contains(&"from a pipe".to_string()), "{rows:#?}");
+    }
+
+    #[test]
+    fn heading_rows_match_the_screen_and_jumps_move_between_them() {
+        let path =
+            std::env::temp_dir().join(format!("yamdview-headings-{}.md", std::process::id()));
+        let long = "word ".repeat(30);
+        std::fs::write(
+            &path,
+            format!(
+                "# Top\n\n{long}\n\n## Code\n\n```sh\n# not a heading\n```\n\n## Table\n\n| a |\n| - |\n| b |\n\n### Last\n\nend\n"
+            ),
+        )
+        .unwrap();
+        let mut viewer = Viewer::new(path.clone(), None, false, true, Theme::dracula());
+        viewer.rebuild(&mut Vec::new(), 30).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let height = viewer.total() as u16;
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, height)).unwrap();
+        terminal.draw(|frame| viewer.draw(frame)).unwrap();
+        let row = |y: u32| {
+            (0..30)
+                .map(|x| terminal.backend().buffer()[(x, y as u16)].symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        };
+        let titles: Vec<String> = viewer.headings.iter().map(|&y| row(y)).collect();
+        assert_eq!(
+            titles,
+            ["Top", "Code", "Table", "Last"],
+            "rows {:?}",
+            viewer.headings
+        );
+
+        let h = viewer.headings.clone();
+        assert_eq!(
+            viewer.heading(0, false),
+            Some(h[1]),
+            "`]` from the top skips the heading already there"
+        );
+        assert_eq!(viewer.heading(h[1], false), Some(h[2]));
+        assert_eq!(viewer.heading(h[2], true), Some(h[1]));
+        assert_eq!(
+            viewer.heading(h[3], false),
+            None,
+            "no wrap-around at the end"
+        );
+        assert_eq!(viewer.heading(0, true), None, "none above the first");
+    }
+
+    #[test]
+    fn without_images_diagrams_show_as_boxed_source() {
+        let path = std::env::temp_dir().join(format!("yamdview-noimg-{}.md", std::process::id()));
+        std::fs::write(
+            &path,
+            "Intro.\n\n```mermaid\ngraph TD\n  A-->B\n```\n\nOutro.\n",
+        )
+        .unwrap();
+        let mut viewer = Viewer::new(path.clone(), None, false, false, Theme::dracula());
+        let mut out = Vec::new();
+        viewer.rebuild(&mut out, 40).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(out.is_empty(), "nothing sent to the terminal as an image");
+        assert!(viewer.blocks.iter().all(|b| matches!(b, Block::Text(..))));
+        let height = viewer.total() as u16;
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, height)).unwrap();
+        terminal.draw(|frame| viewer.draw(frame)).unwrap();
+        let rows: Vec<String> = (0..height)
+            .map(|y| {
+                (0..40)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect();
+        assert!(
+            rows.iter().any(|r| r.starts_with("╭─ mermaid")),
+            "{rows:#?}"
+        );
+        assert!(rows.iter().any(|r| r.contains("A-->B")), "{rows:#?}");
+    }
+
+    fn printed(md: &str, images: bool, styled: bool) -> String {
+        let mut viewer = Viewer::new(
+            PathBuf::from("-"),
+            Some(md.into()),
+            false,
+            images,
+            Theme::dracula(),
+        );
+        let mut out = Vec::new();
+        viewer.print(&mut out, 40, styled).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn prints_plain_text_for_pipes() {
+        let out = printed(
+            "# Title\n\n- [x] done\n\n猫 wide\n\n```sh\nls\n```\n",
+            false,
+            false,
+        );
+        assert!(!out.contains('\x1b'), "no escape codes: {out:?}");
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[0], "Title");
+        assert!(lines.contains(&"[✓] done"), "{lines:#?}");
+        assert!(
+            lines.contains(&"猫 wide"),
+            "wide characters print once: {lines:#?}"
+        );
+        assert!(lines.iter().any(|l| l.starts_with("╭─ sh")), "{lines:#?}");
+        assert!(
+            lines.iter().all(|l| !l.ends_with(' ')),
+            "trailing blanks trimmed: {lines:#?}"
+        );
+    }
+
+    #[test]
+    fn prints_styles_and_diagrams_for_the_terminal() {
+        let styled = printed("# Title\n\ntext\n", false, true);
+        assert!(
+            styled.contains("\x1b[") && styled.contains("Title"),
+            "{styled:?}"
+        );
+
+        let md = "Intro.\n\n```mermaid\ngraph TD\n  A-->B\n```\n";
+        let with_images = printed(md, true, true);
+        assert!(with_images.contains("\x1b_G"), "the diagram is uploaded");
+        assert!(
+            with_images.contains('\u{10EEEE}'),
+            "and printed as placeholder cells"
+        );
+        let without = printed(md, false, false);
+        assert!(
+            !without.contains('\u{10EEEE}') && without.contains("A-->B"),
+            "{without}"
+        );
+    }
+}

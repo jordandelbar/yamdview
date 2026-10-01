@@ -30,6 +30,11 @@ pub struct Search {
 }
 
 impl Search {
+    /// Typing a query, or one is set: the status line shows it.
+    pub fn active(&self) -> bool {
+        self.editing || !self.query.is_empty()
+    }
+
     pub fn cached(&self) -> bool {
         self.rows.is_some()
     }
