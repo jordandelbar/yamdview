@@ -37,14 +37,13 @@ pub enum Chunk {
 
 /// Split a document into prose, boxes and diagrams, in order. Only top-level code
 /// blocks and alerts are boxed: inside a list or quote they stay part of the text.
+/// Diagrams are drawn wherever they are, cutting the list or quote around them.
 pub fn chunks(doc: Document) -> Vec<Chunk> {
     let (mut chunks, mut prose) = (Vec::new(), Vec::new());
-    for block in doc {
-        let chunk = match block {
-            Block::Code { lang, code } if lang.split_whitespace().next() == Some("mermaid") => {
-                Chunk::Mermaid { lang, source: code }
-            }
-            Block::Code { lang, code } => Chunk::Boxed {
+    for piece in doc.into_iter().flat_map(hoist) {
+        let chunk = match piece {
+            Piece::Diagram { lang, source } => Chunk::Mermaid { lang, source },
+            Piece::Block(Block::Code { lang, code }) => Chunk::Boxed {
                 title: lang
                     .split_whitespace()
                     .next()
@@ -53,7 +52,7 @@ pub fn chunks(doc: Document) -> Vec<Chunk> {
                 body: vec![Block::Code { lang, code }],
                 alert: None,
             },
-            Block::Admonition { kind, body } => {
+            Piece::Block(Block::Admonition { kind, body }) => {
                 let alert = alert_kind(kind);
                 Chunk::Boxed {
                     body,
@@ -61,7 +60,7 @@ pub fn chunks(doc: Document) -> Vec<Chunk> {
                     alert: Some(alert),
                 }
             }
-            block => {
+            Piece::Block(block) => {
                 prose.push(block);
                 continue;
             }
@@ -75,6 +74,87 @@ pub fn chunks(doc: Document) -> Vec<Chunk> {
         chunks.push(Chunk::Prose(prose));
     }
     chunks
+}
+
+/// A block, or a mermaid diagram cut out of one.
+enum Piece {
+    Block(Block),
+    Diagram { lang: String, source: String },
+}
+
+impl Piece {
+    fn into_block(self) -> Option<Block> {
+        match self {
+            Piece::Block(b) => Some(b),
+            Piece::Diagram { .. } => None,
+        }
+    }
+}
+
+fn is_mermaid(lang: &str) -> bool {
+    lang.split_whitespace().next() == Some("mermaid")
+}
+
+/// `block` cut around the mermaid diagrams in it and in its lists and quotes, at any
+/// depth. A quote goes on after a diagram; the rest of a list item can't stay in the
+/// item without a marker, so it follows as plain blocks, and the list resumes at its
+/// next item, numbered on. Alerts keep their diagrams: they're drawn in the box.
+fn hoist(block: Block) -> Vec<Piece> {
+    match block {
+        Block::Code { lang, code } if is_mermaid(&lang) => {
+            vec![Piece::Diagram { lang, source: code }]
+        }
+        Block::Quote(body) => {
+            let mut pieces = Vec::new();
+            let mut quoted = Vec::new();
+            for piece in body.into_iter().flat_map(hoist) {
+                match piece {
+                    Piece::Block(b) => quoted.push(b),
+                    diagram => {
+                        if !quoted.is_empty() {
+                            pieces.push(Piece::Block(Block::Quote(std::mem::take(&mut quoted))));
+                        }
+                        pieces.push(diagram);
+                    }
+                }
+            }
+            if !quoted.is_empty() {
+                pieces.push(Piece::Block(Block::Quote(quoted)));
+            }
+            pieces
+        }
+        Block::List(list) => {
+            let mut pieces = Vec::new();
+            let mut items = Vec::new();
+            let mut start = list.start;
+            for (i, item) in list.items.into_iter().enumerate() {
+                let mut body: Vec<Piece> = item.body.into_iter().flat_map(hoist).collect();
+                let cut = body.iter().position(|p| matches!(p, Piece::Diagram { .. }));
+                let rest = cut.map(|cut| body.split_off(cut));
+                items.push(document::Item {
+                    task: item.task,
+                    body: body.into_iter().filter_map(Piece::into_block).collect(),
+                });
+                let Some(rest) = rest else { continue };
+                pieces.push(Piece::Block(Block::List(document::List {
+                    start,
+                    tight: list.tight,
+                    items: std::mem::take(&mut items),
+                })));
+                pieces.extend(rest);
+                start = list.start.map(|n| n + i as u64 + 1);
+            }
+            if !items.is_empty() {
+                pieces.push(Piece::Block(Block::List(document::List {
+                    start,
+                    tight: list.tight,
+                    items,
+                })));
+            }
+            pieces
+        }
+        block => vec![Piece::Block(block)],
+    }
 }
 
 fn alert_kind(kind: AdmonitionKind) -> AlertKind {
@@ -309,6 +389,54 @@ mod tests {
         );
         assert!(matches!(&chunks[2], Chunk::Boxed { title, alert: None, .. } if title == "rust"));
         assert!(matches!(&chunks[3], Chunk::Prose(b) if *b == markdown::parse("bye")));
+    }
+
+    /// Each chunk as it shows: prose as its rendered rows (blank ones dropped), a
+    /// diagram as `mermaid: ` and its source.
+    fn outline(md: &str) -> Vec<String> {
+        let t = Theme::dracula();
+        split(md)
+            .into_iter()
+            .map(|c| match c {
+                Chunk::Prose(blocks) => rows(&render(&blocks, &t))
+                    .into_iter()
+                    .filter(|r| !r.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                Chunk::Mermaid { source, .. } => format!("mermaid: {}", source.trim_end()),
+                Chunk::Boxed { title, .. } => format!("box: {title}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn nested_diagrams_are_drawn_like_top_level_ones() {
+        let md = "- before\n\n  ```mermaid\n  graph TD\n  ```\n\n  after\n- next\n\n3. three\n4. four\n\n   ```mermaid\n   pie\n   ```\n5. five\n\n> quoted\n>\n> ```mermaid\n> graph LR\n> ```\n>\n> still quoted\n";
+        assert_eq!(
+            outline(md),
+            [
+                "- before",
+                "mermaid: graph TD",
+                // The rest of the item can't stay in it without a marker: it follows as text.
+                "after\n- next\n3. three\n4. four",
+                "mermaid: pie",
+                "5. five\n> quoted",
+                "mermaid: graph LR",
+                "> still quoted",
+            ]
+        );
+        let deep = "- outer\n  - inner\n\n    ```mermaid\n    deep\n    ```\n\n    tail\n- last\n";
+        assert_eq!(
+            outline(deep),
+            ["- outer\n    - inner", "mermaid: deep", "tail\n- last"],
+            "both lists are cut"
+        );
+        let alert = "> [!NOTE]\n> ```mermaid\n> graph\n> ```\n";
+        assert_eq!(
+            outline(alert),
+            ["box: Note"],
+            "an alert keeps its diagram in the box"
+        );
     }
 
     #[test]
