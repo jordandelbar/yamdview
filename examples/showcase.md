@@ -5,8 +5,8 @@ see what yamdview draws.
 
 ## Text
 
-Plain text with **bold**, _italic_, `inline code` and a
-[link](https://github.com/jordandelbar/yamdview).
+Plain text with **bold**, _italic_, `inline code`, a
+[link](https://github.com/jordandelbar/yamdview) and a footnote.[^note]
 
 - A bullet list
 - with two items
@@ -144,3 +144,5 @@ gantt
     section Ship
     Release  :2026-09-20, 2d
 ```
+
+[^note]: Footnotes show where they're defined, here at the end of the document.

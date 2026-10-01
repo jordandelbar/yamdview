@@ -14,7 +14,7 @@ use ratatui::{
     widgets::{Paragraph, Widget, Wrap},
 };
 use std::{io::Write, path::PathBuf, time::SystemTime};
-use yamdview::{Chunk, Theme, boxed, diagram, is_heading, markdown, split};
+use yamdview::{Chunk, Theme, boxed, chunks, diagram, document, is_heading, markdown, render};
 
 /// One buffer row as a line of output: plain text, or styled runs of cells.
 /// Trailing blank cells are dropped; a wide character's covered cells are skipped.
@@ -218,13 +218,10 @@ impl Viewer {
         self.headings.clear();
         self.search.clear_layout();
         let mut after_box = false;
-        for chunk in split(&md) {
-            if matches!(chunk, Chunk::Text(t) if t.trim().is_empty()) {
-                continue;
-            }
+        for chunk in chunks(markdown::parse(&md)) {
             let chunk = match chunk {
-                Chunk::Mermaid { raw, .. } if !self.images => Chunk::Boxed {
-                    md: raw.to_string(),
+                Chunk::Mermaid { lang, source } if !self.images => Chunk::Boxed {
+                    body: vec![document::Block::Code { lang, code: source }],
                     title: "mermaid".to_string(),
                     alert: None,
                 },
@@ -233,24 +230,29 @@ impl Viewer {
             // Boxes carry a blank line on each side; two in a row share one.
             let prev_box = std::mem::replace(&mut after_box, matches!(chunk, Chunk::Boxed { .. }));
             let text = match chunk {
-                Chunk::Text(t) => markdown(t, &self.theme),
-                Chunk::Boxed { md, title, alert } => {
-                    let mut text = boxed(&md, &title, alert, &self.theme, width);
+                Chunk::Prose(blocks) => render(&blocks, &self.theme),
+                Chunk::Boxed { body, title, alert } => {
+                    let mut text = boxed(&body, &title, alert, &self.theme, width);
                     if prev_box {
                         text.lines.remove(0);
                     }
                     text
                 }
-                Chunk::Mermaid { raw, source } => {
+                Chunk::Mermaid { lang, source } => {
                     match diagram(&source, &self.theme, u32::from(width) * cell.0, cell.1) {
                         Ok(Some(png)) => {
                             self.push_image(out, &png, cell)?;
                             continue;
                         }
                         // Unsupported or invalid diagram: show the source instead.
-                        Ok(None) => markdown(raw, &self.theme),
+                        Ok(None) => {
+                            render(&[document::Block::Code { lang, code: source }], &self.theme)
+                        }
                         Err(e) => {
-                            let mut t = markdown(raw, &self.theme);
+                            let mut t = render(
+                                &[document::Block::Code { lang, code: source }],
+                                &self.theme,
+                            );
                             t.push_line(Line::from(format!("mermaid render failed: {e}")).red());
                             t
                         }
