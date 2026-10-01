@@ -1,5 +1,7 @@
 //! Markdown with mermaid diagrams, rendered for a terminal in one [`Theme`].
 
+pub mod document;
+pub mod markdown;
 pub mod theme;
 
 use merman::render::{

@@ -5,8 +5,8 @@ see what yamdview draws.
 
 ## Text
 
-Plain text with **bold**, _italic_, `inline code` and a
-[link](https://github.com/jordandelbar/yamdview).
+Plain text with **bold**, _italic_, `inline code`, a
+[link](https://github.com/jordandelbar/yamdview) and a footnote.[^note]
 
 - A bullet list
 - with two items
@@ -19,6 +19,8 @@ Plain text with **bold**, _italic_, `inline code` and a
 - [ ] Read from stdin
 
 > A quote.
+
+[^note]: Footnotes show where they're defined, here at the end of the section.
 
 ### Alerts
 

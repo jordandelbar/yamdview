@@ -1,0 +1,120 @@
+//! A document as yamdview shows it, whatever it was written in: what it contains,
+//! not how it was spelled. Parsers build one ([`crate::markdown::parse`]), the
+//! viewer lays it out.
+
+pub type Document = Vec<Block>;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Block {
+    Heading {
+        level: u8,
+        content: Vec<Inline>,
+        attrs: HeadingAttrs,
+    },
+    Paragraph(Vec<Inline>),
+    Code {
+        /// The language and anything written after it; empty when there's none.
+        lang: String,
+        code: String,
+    },
+    List(List),
+    Quote(Vec<Block>),
+    Admonition {
+        kind: AdmonitionKind,
+        body: Vec<Block>,
+    },
+    Table(Table),
+    Definitions(Vec<Definition>),
+    Footnote {
+        label: String,
+        body: Vec<Block>,
+    },
+    /// Front matter, such as YAML between `---` lines, shown as written.
+    Metadata(String),
+    Html(String),
+    Rule,
+}
+
+/// An id, classes and key-value attributes given to a heading, shown after it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct HeadingAttrs {
+    pub id: Option<String>,
+    pub classes: Vec<String>,
+    pub attrs: Vec<(String, Option<String>)>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct List {
+    /// The first number of a numbered list; `None` for bullets.
+    pub start: Option<u64>,
+    /// No blank lines between items.
+    pub tight: bool,
+    pub items: Vec<Item>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Item {
+    /// A task item's checkbox: `Some(true)` when done.
+    pub task: Option<bool>,
+    pub body: Vec<Block>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AdmonitionKind {
+    Note,
+    Tip,
+    Important,
+    Warning,
+    Caution,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Table {
+    pub align: Vec<Align>,
+    pub head: Vec<Vec<Inline>>,
+    pub rows: Vec<Vec<Vec<Inline>>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Align {
+    None,
+    Left,
+    Center,
+    Right,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Definition {
+    pub term: Vec<Inline>,
+    /// One body per definition the term has.
+    pub details: Vec<Vec<Block>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Inline {
+    Text(String),
+    Code(String),
+    Emphasis(Vec<Inline>),
+    Strong(Vec<Inline>),
+    Strikethrough(Vec<Inline>),
+    Superscript(Vec<Inline>),
+    Subscript(Vec<Inline>),
+    Link {
+        url: String,
+        title: String,
+        content: Vec<Inline>,
+    },
+    Image {
+        url: String,
+        title: String,
+        alt: Vec<Inline>,
+    },
+    FootnoteRef(String),
+    Math {
+        display: bool,
+        tex: String,
+    },
+    Html(String),
+    SoftBreak,
+    HardBreak,
+}
