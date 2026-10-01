@@ -205,6 +205,22 @@ struct Viewer {
 }
 
 impl Viewer {
+    fn new(path: PathBuf, stdin: Option<String>, tmux: bool, images: bool, theme: Theme) -> Self {
+        Viewer {
+            path,
+            headings: Vec::new(),
+            stdin,
+            mtime: None,
+            blocks: Vec::new(),
+            ids: Vec::new(),
+            scroll: 0,
+            tmux,
+            images,
+            theme,
+            search: search::Search::default(),
+        }
+    }
+
     /// Re-read the file (or reuse stdin) and re-render everything for the current terminal size.
     fn rebuild(&mut self, out: &mut impl Write, width: u16) -> std::io::Result<()> {
         for id in self.ids.drain(..) {
@@ -508,19 +524,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .flatten();
         supports_images(|k| std::env::var(k).ok(), tmux_client)
     });
-    let mut v = Viewer {
-        path,
-        stdin,
-        headings: Vec::new(),
-        mtime: None,
-        blocks: Vec::new(),
-        ids: Vec::new(),
-        scroll: 0,
-        tmux,
-        images,
-        theme: Theme::detect(),
-        search: search::Search::default(),
-    };
+    let mut v = Viewer::new(path, stdin, tmux, images, Theme::detect());
     // Print instead of opening the viewer: styled with --print (for the terminal, and so
     // tmux's history), plain whenever stdout isn't a terminal (a pipe or a file).
     let terminal_out = std::io::stdout().is_terminal();
@@ -750,26 +754,16 @@ mod tests {
 
     #[test]
     fn search_skips_images_and_highlights_text_above_status() {
-        let mut viewer = Viewer {
-            path: PathBuf::new(),
-            stdin: None,
-            headings: Vec::new(),
-            mtime: None,
-            ids: Vec::new(),
-            blocks: vec![
-                Block::Image {
-                    id: 1,
-                    cols: 2,
-                    rows: 3,
-                },
-                Block::Text(Box::new(Paragraph::new("target target")), 1),
-            ],
-            scroll: 3,
-            tmux: false,
-            images: true,
-            theme: Theme::dracula(),
-            search: search::Search::default(),
-        };
+        let mut viewer = Viewer::new(PathBuf::new(), None, false, true, Theme::dracula());
+        viewer.blocks = vec![
+            Block::Image {
+                id: 1,
+                cols: 2,
+                rows: 3,
+            },
+            Block::Text(Box::new(Paragraph::new("target target")), 1),
+        ];
+        viewer.scroll = 3;
         viewer.search.query = "target".into();
         viewer.cache_search(20);
         viewer.search.refresh();
@@ -796,19 +790,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!("yamdview-test-{}.md", std::process::id()));
         let md: String = (0..70_000).map(|i| format!("row{i}\n\n")).collect();
         std::fs::write(&path, md).unwrap();
-        let mut viewer = Viewer {
-            path: path.clone(),
-            stdin: None,
-            headings: Vec::new(),
-            mtime: None,
-            ids: Vec::new(),
-            blocks: Vec::new(),
-            scroll: 0,
-            tmux: false,
-            images: true,
-            theme: Theme::dracula(),
-            search: search::Search::default(),
-        };
+        let mut viewer = Viewer::new(path.clone(), None, false, true, Theme::dracula());
         viewer.rebuild(&mut Vec::new(), 10).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert!(viewer.total() > u32::from(u16::MAX));
@@ -857,19 +839,7 @@ mod tests {
             "Intro.\n\n> [!NOTE]\n> a\n\n> [!TIP]\n> b\n\nOutro.\n",
         )
         .unwrap();
-        let mut viewer = Viewer {
-            path: path.clone(),
-            stdin: None,
-            headings: Vec::new(),
-            mtime: None,
-            ids: Vec::new(),
-            blocks: Vec::new(),
-            scroll: 0,
-            tmux: false,
-            images: true,
-            theme: Theme::dracula(),
-            search: search::Search::default(),
-        };
+        let mut viewer = Viewer::new(path.clone(), None, false, true, Theme::dracula());
         viewer.rebuild(&mut Vec::new(), 40).unwrap();
         std::fs::remove_file(&path).unwrap();
         let height = viewer.total() as u16;
@@ -907,19 +877,13 @@ mod tests {
 
     #[test]
     fn renders_stdin_without_a_file() {
-        let mut viewer = Viewer {
-            path: PathBuf::from("-"),
-            stdin: Some("# Piped\n\nfrom a pipe\n".into()),
-            headings: Vec::new(),
-            mtime: None,
-            ids: Vec::new(),
-            blocks: Vec::new(),
-            scroll: 0,
-            tmux: false,
-            images: true,
-            theme: Theme::dracula(),
-            search: search::Search::default(),
-        };
+        let mut viewer = Viewer::new(
+            PathBuf::from("-"),
+            Some("# Piped\n\nfrom a pipe\n".into()),
+            false,
+            true,
+            Theme::dracula(),
+        );
         viewer.rebuild(&mut Vec::new(), 30).unwrap();
         assert_eq!(viewer.mtime, None, "nothing to watch");
         let mut terminal =
@@ -950,19 +914,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let mut viewer = Viewer {
-            path: path.clone(),
-            stdin: None,
-            headings: Vec::new(),
-            mtime: None,
-            ids: Vec::new(),
-            blocks: Vec::new(),
-            scroll: 0,
-            tmux: false,
-            images: true,
-            theme: Theme::dracula(),
-            search: search::Search::default(),
-        };
+        let mut viewer = Viewer::new(path.clone(), None, false, true, Theme::dracula());
         viewer.rebuild(&mut Vec::new(), 30).unwrap();
         std::fs::remove_file(&path).unwrap();
         let height = viewer.total() as u16;
@@ -1057,19 +1009,7 @@ mod tests {
             "Intro.\n\n```mermaid\ngraph TD\n  A-->B\n```\n\nOutro.\n",
         )
         .unwrap();
-        let mut viewer = Viewer {
-            path: path.clone(),
-            stdin: None,
-            headings: Vec::new(),
-            mtime: None,
-            ids: Vec::new(),
-            blocks: Vec::new(),
-            scroll: 0,
-            tmux: false,
-            images: false,
-            theme: Theme::dracula(),
-            search: search::Search::default(),
-        };
+        let mut viewer = Viewer::new(path.clone(), None, false, false, Theme::dracula());
         let mut out = Vec::new();
         viewer.rebuild(&mut out, 40).unwrap();
         std::fs::remove_file(&path).unwrap();
@@ -1096,19 +1036,13 @@ mod tests {
     }
 
     fn printed(md: &str, images: bool, styled: bool) -> String {
-        let mut viewer = Viewer {
-            path: PathBuf::from("-"),
-            stdin: Some(md.into()),
-            headings: Vec::new(),
-            mtime: None,
-            blocks: Vec::new(),
-            ids: Vec::new(),
-            scroll: 0,
-            tmux: false,
+        let mut viewer = Viewer::new(
+            PathBuf::from("-"),
+            Some(md.into()),
+            false,
             images,
-            theme: Theme::dracula(),
-            search: search::Search::default(),
-        };
+            Theme::dracula(),
+        );
         let mut out = Vec::new();
         viewer.print(&mut out, 40, styled).unwrap();
         String::from_utf8(out).unwrap()
