@@ -29,6 +29,7 @@
             cargo
             rustc
             clippy
+            rustfmt
             lefthook
             commitlint
             actionlint

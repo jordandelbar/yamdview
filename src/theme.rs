@@ -65,7 +65,9 @@ fn css(c: Rgb) -> String {
 
 /// `t` of the way from `a` to `b`.
 fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
-    std::array::from_fn(|i| (f32::from(a[i]) + (f32::from(b[i]) - f32::from(a[i])) * t).round() as u8)
+    std::array::from_fn(|i| {
+        (f32::from(a[i]) + (f32::from(b[i]) - f32::from(a[i])) * t).round() as u8
+    })
 }
 
 pub fn color(c: Rgb) -> Color {
@@ -142,7 +144,10 @@ impl Theme {
     /// A config file that is present but incomplete is reported rather than half-used.
     pub fn detect() -> Self {
         if let Some(path) = config_path().filter(|p| p.exists()) {
-            match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|s| Self::from_config(&s)) {
+            match std::fs::read_to_string(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|s| Self::from_config(&s))
+            {
                 Ok(theme) => return theme,
                 Err(e) => eprintln!("yamdview: ignoring {}: {e}", path.display()),
             }
@@ -181,7 +186,10 @@ impl Theme {
             success: get("success")?,
             warning: get("warning")?,
             error: get("error")?,
-            font: cfg.get("font-family").cloned().unwrap_or_else(|| "monospace".into()),
+            font: cfg
+                .get("font-family")
+                .cloned()
+                .unwrap_or_else(|| "monospace".into()),
         })
     }
 
@@ -191,9 +199,18 @@ impl Theme {
     fn from_ghostty(cfg: &HashMap<String, String>) -> Option<Self> {
         let get = |k: &str| cfg.get(k).and_then(|v| hex(v));
         let pal = |n: u8| get(&format!("palette{n}"));
-        let font = cfg.get("font-family").cloned().unwrap_or_else(|| "monospace".into());
-        if cfg.get("theme").is_some_and(|t| t.to_lowercase().contains("dracula")) {
-            return Some(Self { font, ..Self::dracula() });
+        let font = cfg
+            .get("font-family")
+            .cloned()
+            .unwrap_or_else(|| "monospace".into());
+        if cfg
+            .get("theme")
+            .is_some_and(|t| t.to_lowercase().contains("dracula"))
+        {
+            return Some(Self {
+                font,
+                ..Self::dracula()
+            });
         }
         let (background, foreground) = (get("background")?, get("foreground")?);
         let (red, yellow) = (pal(1)?, pal(3)?);
@@ -224,7 +241,11 @@ impl Theme {
         let c = |rgb: Rgb| Some(css(rgb));
         let surface = mix(bg, self.accent, 0.12);
         HostThemeProfile::builder()
-            .appearance(if self.is_dark() { HostThemeAppearance::Dark } else { HostThemeAppearance::Light })
+            .appearance(if self.is_dark() {
+                HostThemeAppearance::Dark
+            } else {
+                HostThemeAppearance::Light
+            })
             .font_family(format!("\"{}\", monospace", self.font))
             // ponytail: 0.7 of the cell height approximates the terminal font's px size.
             .font_size(format!("{}px", (cell_h as f32 * 0.7).round()))
@@ -253,7 +274,16 @@ impl Theme {
                 success: c(self.success),
             })
             .series_palette(
-                [self.accent, self.success, self.keyword, self.info, self.number, self.note, self.error].map(css),
+                [
+                    self.accent,
+                    self.success,
+                    self.keyword,
+                    self.info,
+                    self.number,
+                    self.note,
+                    self.error,
+                ]
+                .map(css),
             )
             .output(HostThemeOutput {
                 root_background: HostThemeRootBackground::Color("transparent".into()),
@@ -274,10 +304,26 @@ impl Theme {
         let rules = [
             rule("comment", self.comment, "italic"),
             rule("string", self.string, ""),
-            rule("constant.numeric, constant.language, constant.character", self.number, ""),
-            rule("keyword, storage, storage.type, entity.name.tag", self.keyword, ""),
-            rule("entity.name.function, support.function, meta.function-call", self.function, ""),
-            rule("entity.name.type, entity.name.class, support.type, support.class", self.ty, ""),
+            rule(
+                "constant.numeric, constant.language, constant.character",
+                self.number,
+                "",
+            ),
+            rule(
+                "keyword, storage, storage.type, entity.name.tag",
+                self.keyword,
+                "",
+            ),
+            rule(
+                "entity.name.function, support.function, meta.function-call",
+                self.function,
+                "",
+            ),
+            rule(
+                "entity.name.type, entity.name.class, support.type, support.class",
+                self.ty,
+                "",
+            ),
             rule("variable.parameter", self.parameter, "italic"),
             rule("invalid", self.error, ""),
         ]
@@ -407,22 +453,41 @@ mod tests {
     #[test]
     fn config_file_sets_every_role() {
         let t = Theme::from_config(DRACULA_CONFIG).unwrap();
-        assert_eq!(t, Theme { font: "JetBrainsMono Nerd Font".into(), ..Theme::dracula() });
+        assert_eq!(
+            t,
+            Theme {
+                font: "JetBrainsMono Nerd Font".into(),
+                ..Theme::dracula()
+            }
+        );
     }
 
     #[test]
     fn config_file_errors_name_the_role() {
         let missing = DRACULA_CONFIG.replace("keyword = #ff79c6\n", "");
-        assert_eq!(Theme::from_config(&missing).unwrap_err(), "missing `keyword`");
+        assert_eq!(
+            Theme::from_config(&missing).unwrap_err(),
+            "missing `keyword`"
+        );
         let bad = DRACULA_CONFIG.replace("#ff79c6", "pink");
-        assert_eq!(Theme::from_config(&bad).unwrap_err(), "`keyword = pink` is not a #rrggbb color");
+        assert_eq!(
+            Theme::from_config(&bad).unwrap_err(),
+            "`keyword = pink` is not a #rrggbb color"
+        );
     }
 
     #[test]
     fn ghostty_dracula_uses_exact_spec_colors() {
-        let cfg = parse("font-family = JetBrainsMono Nerd Font\nfont-family = Noto\ntheme = dracula\n");
+        let cfg =
+            parse("font-family = JetBrainsMono Nerd Font\nfont-family = Noto\ntheme = dracula\n");
         let t = Theme::from_ghostty(&cfg).unwrap();
-        assert_eq!(t, Theme { font: "JetBrainsMono Nerd Font".into(), ..Theme::dracula() });
+        assert_eq!(
+            t,
+            Theme {
+                font: "JetBrainsMono Nerd Font".into(),
+                ..Theme::dracula()
+            }
+        );
     }
 
     #[test]
@@ -433,7 +498,10 @@ mod tests {
              palette = 6=#689d6a\npalette = 8=#928374\n",
         );
         let t = Theme::from_ghostty(&cfg).unwrap();
-        assert_eq!((t.heading, t.keyword, t.comment), ([0x45, 0x85, 0x88], [0xb1, 0x62, 0x86], [0x92, 0x83, 0x74]));
+        assert_eq!(
+            (t.heading, t.keyword, t.comment),
+            ([0x45, 0x85, 0x88], [0xb1, 0x62, 0x86], [0x92, 0x83, 0x74])
+        );
         assert_eq!(t.number, mix(t.error, t.string, 0.5));
         assert!(t.is_dark());
         // Missing palette entries mean we can't trust it: fall back to Dracula.

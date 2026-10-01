@@ -5,6 +5,8 @@ commit-msg:
 
 pre-push:
   commands:
+    fmt:
+      run: cargo fmt --check
     clippy:
       run: cargo clippy --all-targets --locked -- -D warnings
     actionlint:
