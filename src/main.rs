@@ -23,6 +23,7 @@ use ratatui::{
     widgets::{Paragraph, Widget, Wrap},
 };
 use std::{
+    ffi::OsString,
     io::{IsTerminal, Read, Write},
     path::PathBuf,
     process::{Command, Stdio},
@@ -93,7 +94,9 @@ fn print_row(out: &mut impl Write, buf: &Buffer, y: u16, styled: bool) -> std::i
         x += (Span::raw(cell.symbol()).width() as u16).max(1);
         cells.push((cell.symbol(), cell.style()));
     }
-    let blank = |(symbol, style): &(&str, Style)| *symbol == " " && style.bg.is_none_or(|bg| bg == Color::Reset);
+    let blank = |(symbol, style): &(&str, Style)| {
+        *symbol == " " && style.bg.is_none_or(|bg| bg == Color::Reset)
+    };
     let end = cells.iter().rposition(|c| !blank(c)).map_or(0, |i| i + 1);
     let mut cells = cells[..end].iter().peekable();
     while let Some(&(symbol, style)) = cells.next() {
@@ -425,52 +428,73 @@ fn supports_images(var: impl Fn(&str) -> Option<String>, tmux_client: Option<Str
         || var("GHOSTTY_RESOURCES_DIR").is_some()
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let tmux = std::env::var_os("TMUX").is_some();
-    let mut images = None;
-    let mut print = false;
-    let mut mouse = true;
-    let mut path = None;
-    let mut read_stdin = false;
-    let mut positional = false;
-    for arg in std::env::args_os().skip(1) {
-        if !positional && arg == "--" {
-            positional = true;
-        } else if !positional && arg == "--mouse" {
-            mouse = true;
-        } else if !positional && arg == "--no-mouse" {
-            mouse = false;
-        } else if !positional && arg == "--images" {
-            images = Some(true);
-        } else if !positional && (arg == "--print" || arg == "-p") {
-            print = true;
-        } else if !positional && arg == "--no-images" {
-            images = Some(false);
-        } else if !positional && arg == "-" && path.is_none() && !read_stdin {
-            read_stdin = true;
-        } else if !positional && arg.to_string_lossy().starts_with('-') && arg != "-" {
-            return Err(format!("unknown option: {}", arg.to_string_lossy()).into());
-        } else if path.is_none() && !read_stdin {
-            path = Some(PathBuf::from(arg));
-        } else {
-            return Err(
-                "usage: yamdview [-p|--print] [--mouse|--no-mouse] [--images|--no-images] [--] [FILE | -]"
-                    .into(),
-            );
+#[derive(Debug, PartialEq)]
+struct Args {
+    print: bool,
+    mouse: bool,
+    images: Option<bool>,
+    path: Option<PathBuf>,
+    read_stdin: bool,
+}
+
+impl Args {
+    /// The defaults, before any argument is parsed.
+    fn new() -> Self {
+        Args {
+            print: false,
+            mouse: true,
+            images: None,
+            path: None,
+            read_stdin: false,
         }
     }
+}
+
+fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> {
+    let mut a = Args::new();
+    let mut positional = false;
+    for arg in args {
+        let opt = (!positional).then(|| arg.to_string_lossy());
+        let free = a.path.is_none() && !a.read_stdin;
+        match opt.as_deref() {
+            Some("--") => positional = true,
+            Some("--mouse") => a.mouse = true,
+            Some("--no-mouse") => a.mouse = false,
+            Some("--images") => a.images = Some(true),
+            Some("--no-images") => a.images = Some(false),
+            Some("-p" | "--print") => a.print = true,
+            Some("-") if free => a.read_stdin = true,
+            Some(o) if o.starts_with('-') && o != "-" => {
+                return Err(format!("unknown option: {o}"));
+            }
+            _ if free => a.path = Some(PathBuf::from(&arg)),
+            _ => {
+                return Err(
+                    "usage: yamdview [-p|--print] [--mouse|--no-mouse] [--images|--no-images] [--] [FILE | -]"
+                        .into(),
+                );
+            }
+        }
+    }
+    Ok(a)
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let tmux = std::env::var_os("TMUX").is_some();
+    let args = parse_args(std::env::args_os().skip(1))?;
     // `-`, or a pipe with no file given: read stdin now, before the TUI takes over.
     // Keys still work: crossterm reads them from /dev/tty when stdin isn't a terminal.
-    let stdin = if read_stdin || (path.is_none() && !std::io::stdin().is_terminal()) {
+    let stdin = if args.read_stdin || (args.path.is_none() && !std::io::stdin().is_terminal()) {
         let mut md = String::new();
         std::io::stdin().read_to_string(&mut md)?;
         Some(md)
     } else {
         None
     };
-    let path =
-        path.unwrap_or_else(|| PathBuf::from(if stdin.is_some() { "-" } else { "README.md" }));
-    let images = images.unwrap_or_else(|| {
+    let path = args
+        .path
+        .unwrap_or_else(|| PathBuf::from(if stdin.is_some() { "-" } else { "README.md" }));
+    let images = args.images.unwrap_or_else(|| {
         let tmux_client = tmux
             .then(|| {
                 Command::new("tmux")
@@ -500,10 +524,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Print instead of opening the viewer: styled with --print (for the terminal, and so
     // tmux's history), plain whenever stdout isn't a terminal (a pipe or a file).
     let terminal_out = std::io::stdout().is_terminal();
-    if print || !terminal_out {
-        v.images &= print && terminal_out;
+    if args.print || !terminal_out {
+        v.images &= args.print && terminal_out;
         let width = ratatui::crossterm::terminal::size().map_or(80, |(w, _)| w);
-        match v.print(&mut std::io::stdout().lock(), width, print) {
+        match v.print(&mut std::io::stdout().lock(), width, args.print) {
             // The reader stopped early (`| head`): that's not an error.
             Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => return Ok(()),
             result => result?,
@@ -517,7 +541,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal = ratatui::init();
 
     let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-        if mouse {
+        if args.mouse {
             execute!(std::io::stdout(), EnableMouseCapture)?;
         }
         let mut selection = selection::Selection::default();
@@ -696,6 +720,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_args() {
+        let parse = |args: &[&str]| parse_args(args.iter().map(OsString::from));
+        let a = parse(&["-p", "--no-mouse", "--images", "doc.md"]).unwrap();
+        assert!(a.print && !a.mouse && a.images == Some(true));
+        assert_eq!(a.path, Some(PathBuf::from("doc.md")));
+        assert!(parse(&["-"]).unwrap().read_stdin);
+        let a = parse(&["--", "-"]).unwrap();
+        assert!(
+            !a.read_stdin && a.path == Some(PathBuf::from("-")),
+            "`-` after `--` is a file"
+        );
+        assert_eq!(
+            parse(&["--", "--print"]).unwrap().path,
+            Some(PathBuf::from("--print"))
+        );
+        assert_eq!(parse(&["-x"]).unwrap_err(), "unknown option: -x");
+        assert!(parse(&["a.md", "b.md"]).unwrap_err().starts_with("usage"));
+        assert!(parse(&["a.md", "-"]).unwrap_err().starts_with("usage"));
+    }
 
     #[test]
     fn placeholder_is_one_cell_wide() {
@@ -895,7 +940,8 @@ mod tests {
 
     #[test]
     fn heading_rows_match_the_screen_and_jumps_move_between_them() {
-        let path = std::env::temp_dir().join(format!("yamdview-headings-{}.md", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("yamdview-headings-{}.md", std::process::id()));
         let long = "word ".repeat(30);
         std::fs::write(
             &path,
@@ -931,33 +977,71 @@ mod tests {
                 .to_string()
         };
         let titles: Vec<String> = viewer.headings.iter().map(|&y| row(y)).collect();
-        assert_eq!(titles, ["Top", "Code", "Table", "Last"], "rows {:?}", viewer.headings);
+        assert_eq!(
+            titles,
+            ["Top", "Code", "Table", "Last"],
+            "rows {:?}",
+            viewer.headings
+        );
 
         let h = viewer.headings.clone();
-        assert_eq!(viewer.heading(0, false), Some(h[1]), "`]` from the top skips the heading already there");
+        assert_eq!(
+            viewer.heading(0, false),
+            Some(h[1]),
+            "`]` from the top skips the heading already there"
+        );
         assert_eq!(viewer.heading(h[1], false), Some(h[2]));
         assert_eq!(viewer.heading(h[2], true), Some(h[1]));
-        assert_eq!(viewer.heading(h[3], false), None, "no wrap-around at the end");
+        assert_eq!(
+            viewer.heading(h[3], false),
+            None,
+            "no wrap-around at the end"
+        );
         assert_eq!(viewer.heading(0, true), None, "none above the first");
     }
 
     #[test]
     fn detects_terminals_with_kitty_image_placeholders() {
         let env = |pairs: &'static [(&'static str, &'static str)]| {
-            move |k: &str| pairs.iter().find(|(key, _)| *key == k).map(|(_, v)| v.to_string())
+            move |k: &str| {
+                pairs
+                    .iter()
+                    .find(|(key, _)| *key == k)
+                    .map(|(_, v)| v.to_string())
+            }
         };
         // (environment, tmux client terminal, expected)
-        type Case = (&'static [(&'static str, &'static str)], Option<&'static str>, bool);
+        type Case = (
+            &'static [(&'static str, &'static str)],
+            Option<&'static str>,
+            bool,
+        );
         let cases: [Case; 8] = [
             (&[("TERM", "xterm-kitty")], None, true),
             (&[("TERM", "xterm-ghostty")], None, true),
-            (&[("TERM", "xterm-256color"), ("TERM_PROGRAM", "ghostty")], None, true),
-            (&[("TERM", "xterm-256color"), ("KITTY_WINDOW_ID", "1")], None, true),
+            (
+                &[("TERM", "xterm-256color"), ("TERM_PROGRAM", "ghostty")],
+                None,
+                true,
+            ),
+            (
+                &[("TERM", "xterm-256color"), ("KITTY_WINDOW_ID", "1")],
+                None,
+                true,
+            ),
             (&[("TERM", "xterm-256color")], None, false),
             (&[("TERM", "alacritty")], None, false),
             // Inside tmux, the client terminal as tmux reports it decides.
-            (&[("TERM", "tmux-256color"), ("TERM_PROGRAM", "tmux")], Some("xterm-ghostty"), true),
-            (&[("TERM", "tmux-256color"), ("GHOSTTY_RESOURCES_DIR", "/x")], Some("xterm-256color"), false),
+            (
+                &[("TERM", "tmux-256color"), ("TERM_PROGRAM", "tmux")],
+                Some("xterm-ghostty"),
+                true,
+            ),
+            (
+                &[("TERM", "tmux-256color"), ("GHOSTTY_RESOURCES_DIR", "/x")],
+                Some("xterm-256color"),
+                false,
+            ),
         ];
         for (vars, client, expected) in cases {
             let got = supports_images(env(vars), client.map(str::to_string));
@@ -968,7 +1052,11 @@ mod tests {
     #[test]
     fn without_images_diagrams_show_as_boxed_source() {
         let path = std::env::temp_dir().join(format!("yamdview-noimg-{}.md", std::process::id()));
-        std::fs::write(&path, "Intro.\n\n```mermaid\ngraph TD\n  A-->B\n```\n\nOutro.\n").unwrap();
+        std::fs::write(
+            &path,
+            "Intro.\n\n```mermaid\ngraph TD\n  A-->B\n```\n\nOutro.\n",
+        )
+        .unwrap();
         let mut viewer = Viewer {
             path: path.clone(),
             stdin: None,
@@ -1000,7 +1088,10 @@ mod tests {
                     .to_string()
             })
             .collect();
-        assert!(rows.iter().any(|r| r.starts_with("╭─ mermaid")), "{rows:#?}");
+        assert!(
+            rows.iter().any(|r| r.starts_with("╭─ mermaid")),
+            "{rows:#?}"
+        );
         assert!(rows.iter().any(|r| r.contains("A-->B")), "{rows:#?}");
     }
 
@@ -1025,26 +1116,45 @@ mod tests {
 
     #[test]
     fn prints_plain_text_for_pipes() {
-        let out = printed("# Title\n\n- [x] done\n\n猫 wide\n\n```sh\nls\n```\n", false, false);
+        let out = printed(
+            "# Title\n\n- [x] done\n\n猫 wide\n\n```sh\nls\n```\n",
+            false,
+            false,
+        );
         assert!(!out.contains('\x1b'), "no escape codes: {out:?}");
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines[0], "Title");
         assert!(lines.contains(&"[✓] done"), "{lines:#?}");
-        assert!(lines.contains(&"猫 wide"), "wide characters print once: {lines:#?}");
+        assert!(
+            lines.contains(&"猫 wide"),
+            "wide characters print once: {lines:#?}"
+        );
         assert!(lines.iter().any(|l| l.starts_with("╭─ sh")), "{lines:#?}");
-        assert!(lines.iter().all(|l| !l.ends_with(' ')), "trailing blanks trimmed: {lines:#?}");
+        assert!(
+            lines.iter().all(|l| !l.ends_with(' ')),
+            "trailing blanks trimmed: {lines:#?}"
+        );
     }
 
     #[test]
     fn prints_styles_and_diagrams_for_the_terminal() {
         let styled = printed("# Title\n\ntext\n", false, true);
-        assert!(styled.contains("\x1b[") && styled.contains("Title"), "{styled:?}");
+        assert!(
+            styled.contains("\x1b[") && styled.contains("Title"),
+            "{styled:?}"
+        );
 
         let md = "Intro.\n\n```mermaid\ngraph TD\n  A-->B\n```\n";
         let with_images = printed(md, true, true);
         assert!(with_images.contains("\x1b_G"), "the diagram is uploaded");
-        assert!(with_images.contains('\u{10EEEE}'), "and printed as placeholder cells");
+        assert!(
+            with_images.contains('\u{10EEEE}'),
+            "and printed as placeholder cells"
+        );
         let without = printed(md, false, false);
-        assert!(!without.contains('\u{10EEEE}') && without.contains("A-->B"), "{without}");
+        assert!(
+            !without.contains('\u{10EEEE}') && without.contains("A-->B"),
+            "{without}"
+        );
     }
 }
