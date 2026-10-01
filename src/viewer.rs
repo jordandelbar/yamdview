@@ -109,6 +109,17 @@ pub fn paragraphs(
     out
 }
 
+/// A terminal cell's size in pixels.
+/// ponytail: assumes 10x20px cells if the terminal won't report pixel size.
+fn cell_size() -> (u32, u32) {
+    window_size()
+        .ok()
+        .filter(|w| w.width > 0 && w.height > 0 && w.columns > 0 && w.rows > 0)
+        .map_or((10, 20), |w| {
+            (u32::from(w.width / w.columns), u32::from(w.height / w.rows))
+        })
+}
+
 pub struct Viewer {
     pub path: PathBuf,
     /// Document rows where headings start, in order, for `[` and `]`.
@@ -166,28 +177,43 @@ impl Viewer {
                 != self.mtime
     }
 
+    /// The markdown: stdin, or the file read afresh (noting its mtime for `changed_on_disk`).
+    fn read(&mut self) -> std::io::Result<String> {
+        if let Some(md) = &self.stdin {
+            return Ok(md.clone());
+        }
+        self.mtime = std::fs::metadata(&self.path)
+            .and_then(|m| m.modified())
+            .ok();
+        std::fs::read_to_string(&self.path)
+    }
+
+    /// Upload a rendered diagram and add it as the next block, sized in `cell`s.
+    fn push_image(
+        &mut self,
+        out: &mut impl Write,
+        png: &[u8],
+        cell: (u32, u32),
+    ) -> std::io::Result<()> {
+        let max = DIACRITICS.len() as u32;
+        let (w, h) = png_size(png);
+        let (cols, rows) = (
+            w.div_ceil(cell.0).min(max) as u16,
+            h.div_ceil(cell.1).min(max) as u16,
+        );
+        // 24-bit id (sent as a truecolor fg): pid keeps viewers in other panes apart.
+        let id = (std::process::id() & 0xffff) << 8 | (self.ids.len() as u32 + 1);
+        upload(out, id, png, cols, rows, self.tmux)?;
+        self.ids.push(id);
+        self.blocks.push(Block::Image { id, cols, rows });
+        Ok(())
+    }
+
     /// Re-read the file (or reuse stdin) and re-render everything for the current terminal size.
     pub fn rebuild(&mut self, out: &mut impl Write, width: u16) -> std::io::Result<()> {
         self.free_images(out)?;
-        let md = match &self.stdin {
-            Some(md) => md.clone(),
-            None => {
-                self.mtime = std::fs::metadata(&self.path)
-                    .and_then(|m| m.modified())
-                    .ok();
-                std::fs::read_to_string(&self.path)?
-            }
-        };
-
-        // ponytail: assumes 10x20px cells if the terminal won't report pixel size.
-        let cell = window_size()
-            .ok()
-            .filter(|w| w.width > 0 && w.height > 0 && w.columns > 0 && w.rows > 0)
-            .map_or((10, 20), |w| {
-                (u32::from(w.width / w.columns), u32::from(w.height / w.rows))
-            });
-        let max = DIACRITICS.len() as u32;
-
+        let md = self.read()?;
+        let cell = cell_size();
         self.blocks.clear();
         self.headings.clear();
         self.search.clear_layout();
@@ -218,17 +244,7 @@ impl Viewer {
                 Chunk::Mermaid { raw, source } => {
                     match diagram(&source, &self.theme, u32::from(width) * cell.0, cell.1) {
                         Ok(Some(png)) => {
-                            let (w, h) = png_size(&png);
-                            let (cols, rows) = (
-                                w.div_ceil(cell.0).min(max) as u16,
-                                h.div_ceil(cell.1).min(max) as u16,
-                            );
-                            // 24-bit id (sent as a truecolor fg): pid keeps viewers in other panes apart.
-                            let id =
-                                (std::process::id() & 0xffff) << 8 | (self.ids.len() as u32 + 1);
-                            upload(out, id, &png, cols, rows, self.tmux)?;
-                            self.ids.push(id);
-                            self.blocks.push(Block::Image { id, cols, rows });
+                            self.push_image(out, &png, cell)?;
                             continue;
                         }
                         // Unsupported or invalid diagram: show the source instead.
