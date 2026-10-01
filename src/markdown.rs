@@ -290,6 +290,272 @@ fn text(nodes: &[Node]) -> String {
         .collect()
 }
 
+/// Markdown that parses back to `doc`, for renderers that only take Markdown text.
+/// Text is escaped wholesale (a backslash before every ASCII punctuation character is
+/// always a valid escape), so nothing in it can turn into syntax.
+pub fn write(doc: &[Block]) -> String {
+    let mut md = write_blocks(doc, "\n\n");
+    md.push('\n');
+    md
+}
+
+/// Blocks joined by `sep`: a blank line, or a newline inside a tight list item.
+fn write_blocks(doc: &[Block], sep: &str) -> String {
+    let mut parts = Vec::new();
+    // Two lists in a row with the same marker would merge into one: alternate it.
+    let mut prev_list: Option<(bool, bool)> = None;
+    for b in doc {
+        parts.push(match b {
+            Block::List(list) => {
+                let ordered = list.start.is_some();
+                let alt = prev_list.is_some_and(|(o, alt)| o == ordered && !alt);
+                prev_list = Some((ordered, alt));
+                write_list(list, alt)
+            }
+            b => {
+                prev_list = None;
+                write_block(b)
+            }
+        });
+    }
+    parts.join(sep)
+}
+
+fn write_block(b: &Block) -> String {
+    match b {
+        Block::Heading {
+            level,
+            content,
+            attrs,
+        } => {
+            let mut parts: Vec<String> = attrs.id.iter().map(|id| format!("#{id}")).collect();
+            parts.extend(attrs.classes.iter().map(|c| format!(".{c}")));
+            parts.extend(attrs.attrs.iter().map(|(k, v)| match v {
+                Some(v) => format!("{k}={v}"),
+                None => k.clone(),
+            }));
+            let attrs = if parts.is_empty() {
+                String::new()
+            } else {
+                format!(" {{{}}}", parts.join(" "))
+            };
+            let hashes = "#".repeat(usize::from(*level));
+            format!("{hashes} {}{attrs}", write_inlines(content, false))
+        }
+        Block::Paragraph(content) => write_inlines(content, false),
+        Block::Code { lang, code } => {
+            // Tildes when the info string has a backtick, which a backtick fence can't take.
+            let c = if lang.contains('`') { '~' } else { '`' };
+            let fence = c.to_string().repeat(3.max(longest_run(code, c) + 1));
+            let nl = if code.is_empty() || code.ends_with('\n') {
+                ""
+            } else {
+                "\n"
+            };
+            format!("{fence}{lang}\n{code}{nl}{fence}")
+        }
+        Block::Quote(body) => indent(&write_blocks(body, "\n\n"), "> ", "> "),
+        Block::Admonition { kind, body } => {
+            let label = match kind {
+                AdmonitionKind::Note => "NOTE",
+                AdmonitionKind::Tip => "TIP",
+                AdmonitionKind::Important => "IMPORTANT",
+                AdmonitionKind::Warning => "WARNING",
+                AdmonitionKind::Caution => "CAUTION",
+            };
+            let body = write_blocks(body, "\n\n");
+            indent(&format!("[!{label}]\n{body}"), "> ", "> ")
+        }
+        Block::List(list) => write_list(list, false),
+        Block::Table(table) => {
+            let row = |cells: &[Vec<Inline>]| {
+                let cells: Vec<String> = cells.iter().map(|c| write_inlines(c, true)).collect();
+                format!("| {} |", cells.join(" | "))
+            };
+            let rule: Vec<&str> = table
+                .align
+                .iter()
+                .map(|a| match a {
+                    Align::None => "---",
+                    Align::Left => ":--",
+                    Align::Center => ":-:",
+                    Align::Right => "--:",
+                })
+                .collect();
+            let mut lines = vec![row(&table.head), format!("| {} |", rule.join(" | "))];
+            lines.extend(table.rows.iter().map(|r| row(r)));
+            lines.join("\n")
+        }
+        Block::Definitions(definitions) => definitions
+            .iter()
+            .map(|d| {
+                let mut lines = vec![write_inlines(&d.term, false)];
+                for detail in &d.details {
+                    lines.push(indent(&write_blocks(detail, "\n\n"), ": ", "  "));
+                }
+                lines.join("\n")
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        Block::Footnote { label, body } => indent(
+            &write_blocks(body, "\n\n"),
+            &format!("[^{label}]: "),
+            "    ",
+        ),
+        Block::Metadata(yaml) => {
+            let nl = if yaml.ends_with('\n') { "" } else { "\n" };
+            format!("---\n{yaml}{nl}---")
+        }
+        Block::Html(html) => html.trim_end_matches('\n').to_string(),
+        // Not `---`: right under a paragraph line, that underlines a heading.
+        Block::Rule => "***".to_string(),
+    }
+}
+
+/// `alt` picks the other marker (`*` or `)`), to keep apart lists written one after another.
+fn write_list(list: &List, alt: bool) -> String {
+    let sep = if list.tight { "\n" } else { "\n\n" };
+    list.items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let marker = match list.start {
+                None if alt => "* ".to_string(),
+                None => "- ".to_string(),
+                Some(n) => format!("{}{} ", n + i as u64, if alt { ')' } else { '.' }),
+            };
+            let task = match item.task {
+                Some(true) => "[x] ",
+                Some(false) => "[ ] ",
+                None => "",
+            };
+            let body = format!("{task}{}", write_blocks(&item.body, sep));
+            indent(&body, &marker, &" ".repeat(marker.len()))
+        })
+        .collect::<Vec<_>>()
+        .join(sep)
+}
+
+/// `text` with `first` before its first line and `rest` before the others. Blank lines
+/// get the prefix without its trailing space: `>` keeps them in a quote.
+fn indent(text: &str, first: &str, rest: &str) -> String {
+    if text.is_empty() {
+        return first.trim_end().to_string();
+    }
+    text.lines()
+        .enumerate()
+        .map(|(i, line)| {
+            let prefix = if i == 0 { first } else { rest };
+            if line.is_empty() {
+                prefix.trim_end().to_string()
+            } else {
+                format!("{prefix}{line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Inline content; `table` escapes the pipes a table cell would split code at.
+fn write_inlines(content: &[Inline], table: bool) -> String {
+    let mut md = String::new();
+    for inline in content {
+        match inline {
+            Inline::Text(s) => md.push_str(&escape(s)),
+            Inline::Code(code) => md.push_str(&code_span(code, table)),
+            Inline::Emphasis(c) => md.push_str(&format!("*{}*", write_inlines(c, table))),
+            Inline::Strong(c) => md.push_str(&format!("**{}**", write_inlines(c, table))),
+            Inline::Strikethrough(c) => md.push_str(&format!("~~{}~~", write_inlines(c, table))),
+            Inline::Superscript(c) => md.push_str(&format!("^{}^", write_inlines(c, table))),
+            Inline::Subscript(c) => md.push_str(&format!("~{}~", write_inlines(c, table))),
+            Inline::Link {
+                url,
+                title,
+                content,
+            } => md.push_str(&format!(
+                "[{}]({})",
+                write_inlines(content, table),
+                destination(url, title)
+            )),
+            Inline::Image { url, title, alt } => md.push_str(&format!(
+                "![{}]({})",
+                write_inlines(alt, table),
+                destination(url, title)
+            )),
+            Inline::FootnoteRef(label) => md.push_str(&format!("[^{label}]")),
+            Inline::Math { display, tex } => {
+                let d = if *display { "$$" } else { "$" };
+                md.push_str(&format!("{d}{tex}{d}"));
+            }
+            Inline::Html(html) => md.push_str(html),
+            Inline::SoftBreak => md.push('\n'),
+            Inline::HardBreak => md.push_str("\\\n"),
+        }
+    }
+    md
+}
+
+fn escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_ascii_punctuation() {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// A code span that reads back as exactly `code`: fenced by more backticks than it
+/// holds, and padded by a space on each side, which the parser strips again.
+fn code_span(code: &str, table: bool) -> String {
+    let code = if table {
+        code.replace('|', "\\|")
+    } else {
+        code.to_string()
+    };
+    let ticks = "`".repeat(longest_run(&code, '`') + 1);
+    // Only spaces: the parser keeps padding there, so don't add any.
+    if code.chars().all(|c| c == ' ') {
+        format!("{ticks}{code}{ticks}")
+    } else {
+        format!("{ticks} {code} {ticks}")
+    }
+}
+
+/// A link or image destination in angle brackets (spaces and parentheses allowed),
+/// with its title when it has one.
+fn destination(url: &str, title: &str) -> String {
+    let url: String = url
+        .chars()
+        .flat_map(|c| {
+            ['\\']
+                .into_iter()
+                .filter(move |_| "<>\\".contains(c))
+                .chain([c])
+        })
+        .collect();
+    if title.is_empty() {
+        format!("<{url}>")
+    } else {
+        let title: String = title
+            .chars()
+            .flat_map(|c| {
+                ['\\']
+                    .into_iter()
+                    .filter(move |_| "\"\\".contains(c))
+                    .chain([c])
+            })
+            .collect();
+        format!("<{url}> \"{title}\"")
+    }
+}
+
+/// The longest run of `c` in `s`.
+fn longest_run(s: &str, c: char) -> usize {
+    s.split(|x| x != c).map(str::len).max().unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -507,6 +773,88 @@ mod tests {
             plain(&parse(md), &mut doc);
             assert!(!doc.is_empty());
             assert_eq!(doc, events);
+        }
+    }
+
+    /// Markdown chosen to trip the writer: syntax characters in text, backticks and
+    /// pipes in code, lists that would merge, nesting that needs indentation.
+    const EDGES: &[&str] = &[
+        "All punctuation as text: !\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ and \\\\ backslash.\n",
+        "# Heading with trailing hashes \\#\\# and *em* {#id .class key=value}\n",
+        "1986\\. A great year.\n\n\\- not a list\n\n\\> not a quote\n",
+        "Code: `` a`b ``, ` `` `, `   `, and `|` pipes.\n\n| a | b |\n| - | :-: |\n| `x\\|y` | \\| *c* |\n",
+        "````\n```\nnested fence\n```\n````\n\n~~~ lang`tick\nx\n~~~\n",
+        "- a\n- b\n\n* c\n* d\n\n- e\n\n1. one\n2. two\n\n1) three\n",
+        "- loose\n\n  second paragraph\n- item\n\n  > quoted\n  >\n  > more\n",
+        "- [x] done\n- [ ] open\n  1. nested\n  2. list\n\n     with a paragraph\n",
+        "7. starts at seven\n8. next\n",
+        "> outer\n>\n> > inner\n>\n> - list in quote\n\n> [!WARNING]\n> body\n>\n> ```sh\n> code in alert\n> ```\n",
+        "[link with (parens) and spaces](<https://example.com/a b> \"Title \\\"q\\\"\") and <https://auto.link>\n\n![alt *em*](img.png \"t\")\n",
+        "Hard\\\nbreak and soft\nbreak, ~~strike~~, ~sub~, $x^2$ and $$\\sum$$.\n",
+        "Text[^n] here.\n\n[^n]: A footnote\n\n    with a second paragraph.\n",
+        "Term\n: Definition one\n: Definition two\n\nOther\n: More\n",
+        "<details>\n<summary>Hi</summary>\n</details>\n\nInline <kbd>Ctrl</kbd> html.\n",
+        "Para\n\n***\n\n- tight item\n  ***\n- next\n",
+        "---\ntitle: Front matter\n---\n\n# After\n",
+        "```\n```\n\n```rust\nno newline at end\n```\n",
+    ];
+
+    fn documents() -> Vec<&'static str> {
+        let mut docs = vec![
+            include_str!("../README.md"),
+            include_str!("../docs/usage.md"),
+            include_str!("../examples/showcase.md"),
+        ];
+        docs.extend(EDGES);
+        docs
+    }
+
+    #[test]
+    fn written_markdown_parses_back_to_the_same_document() {
+        for md in documents() {
+            let doc = parse(md);
+            let written = write(&doc);
+            assert_eq!(parse(&written), doc, "from:\n{md}\nwritten:\n{written}");
+        }
+    }
+
+    /// `text` as it looks: neighbouring spans of one style merged, since escapes split
+    /// the text tui-markdown gets into more pieces without changing what's drawn.
+    fn drawn(text: ratatui::text::Text<'static>) -> Vec<ratatui::text::Line<'static>> {
+        use ratatui::text::{Line, Span};
+        text.lines
+            .into_iter()
+            .map(|line| {
+                let mut spans: Vec<Span> = Vec::new();
+                for span in line.spans {
+                    match spans.last_mut() {
+                        Some(last) if last.style == span.style => {
+                            last.content = format!("{}{}", last.content, span.content).into();
+                        }
+                        _ => spans.push(span),
+                    }
+                }
+                Line { spans, ..line }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn written_markdown_renders_like_the_original() {
+        let theme = crate::Theme::dracula();
+        for md in documents() {
+            let written = write(&parse(md));
+            let (got, want) = (
+                drawn(crate::markdown(&written, &theme)),
+                drawn(crate::markdown(md, &theme)),
+            );
+            if let Some(i) = (0..got.len().max(want.len())).find(|&i| got.get(i) != want.get(i)) {
+                panic!(
+                    "line {i} differs\nwritten: {:?}\noriginal: {:?}\nfrom:\n{md}",
+                    got.get(i),
+                    want.get(i)
+                );
+            }
         }
     }
 }
