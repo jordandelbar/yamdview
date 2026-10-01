@@ -20,8 +20,6 @@ Plain text with **bold**, _italic_, `inline code`, a
 
 > A quote.
 
-[^note]: Footnotes show where they're defined, here at the end of the section.
-
 ### Alerts
 
 Each kind is colored by its own theme role.
@@ -146,3 +144,5 @@ gantt
     section Ship
     Release  :2026-09-20, 2d
 ```
+
+[^note]: Footnotes show where they're defined, here at the end of the document.
