@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.4.1](https://github.com/jordandelbar/yamdview/compare/v0.4.0...v0.4.1) (2026-10-01)
+
+
+### Refactor
+
+* Extract argument parsing and enforce rustfmt ([#21](https://github.com/jordandelbar/yamdview/issues/21)) ([cd85a53](https://github.com/jordandelbar/yamdview/commit/cd85a538b17d7e57e36ba0179ac9f44aea1a3e49))
+* Simplify Viewer:rebuild and share viewer test setup ([#24](https://github.com/jordandelbar/yamdview/issues/24)) ([ecbd82e](https://github.com/jordandelbar/yamdview/commit/ecbd82e36fd03dc783516203f73e74f51ecdd69c))
+* Split main.rs into cli, kitty, viewer and tui modules ([#23](https://github.com/jordandelbar/yamdview/issues/23)) ([7ae15a1](https://github.com/jordandelbar/yamdview/commit/7ae15a183c60ac9e33f0e4b11b748389b33fdeca))
+
 ## [0.4.0](https://github.com/jordandelbar/yamdview/compare/v0.3.0...v0.4.0) (2026-09-26)
 
 
