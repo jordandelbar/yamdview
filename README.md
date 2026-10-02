@@ -104,6 +104,22 @@ It reads from a pipe too: `gh pr view 12 | yamdview`.
 `yamdview --print notes.md` prints the whole document, diagrams included,
 so you can scroll and copy it with tmux copy mode.
 
+Links show as their text and open on click, without the URL alongside.
+yamdview reads the mouse, so hold Shift, plus your terminal's link modifier
+(Shift+Ctrl+click in Ghostty on Linux).
+
+Inside tmux, add this to `~/.tmux.conf` for the mouse, diagrams and links to
+work. The `hyperlinks` line needs tmux 3.4 or later:
+
+```sh
+set -g mouse on
+set -g allow-passthrough on
+set -as terminal-features ",*:hyperlinks"
+```
+
+tmux reads `terminal-features` when a client attaches, so detach and reattach
+after adding it.
+
 With no file, it opens `README.md`. [docs/usage.md](docs/usage.md) covers
 keys, search, mouse selection, tmux setup and themes.
 

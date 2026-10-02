@@ -14,7 +14,9 @@ use ratatui::{
     widgets::{Paragraph, Widget, Wrap},
 };
 use std::{io::Write, path::PathBuf, time::SystemTime};
-use yamdview::{Chunk, Theme, boxed, chunks, diagram, document, is_heading, markdown, render};
+use yamdview::{
+    Chunk, Theme, boxed, chunks, diagram, document, is_heading, link, markdown, render,
+};
 
 /// One buffer row as a line of output: plain text, or styled runs of cells.
 /// Trailing blank cells are dropped; a wide character's covered cells are skipped.
@@ -23,7 +25,7 @@ pub fn print_row(out: &mut impl Write, buf: &Buffer, y: u16, styled: bool) -> st
     let mut x = 0;
     while x < buf.area.width {
         let cell = &buf[(x, y)];
-        x += (Span::raw(cell.symbol()).width() as u16).max(1);
+        x += (Span::raw(link::visible(cell.symbol())).width() as u16).max(1);
         cells.push((cell.symbol(), cell.style()));
     }
     let blank = |(symbol, style): &(&str, Style)| {
@@ -133,6 +135,9 @@ pub struct Viewer {
     pub tmux: bool,
     /// Draw diagrams as images; without kitty graphics they show as boxed source.
     pub images: bool,
+    /// Link URLs, by the id their text is tagged with; `None` shows each URL after its
+    /// link instead, for plain output.
+    pub links: Option<Vec<String>>,
     pub theme: Theme,
     pub search: search::Search,
 }
@@ -155,6 +160,7 @@ impl Viewer {
             scroll: 0,
             tmux,
             images,
+            links: Some(Vec::new()),
             theme,
             search: search::Search::default(),
         }
@@ -216,6 +222,9 @@ impl Viewer {
         let cell = cell_size();
         self.blocks.clear();
         self.headings.clear();
+        if let Some(links) = &mut self.links {
+            links.clear();
+        }
         self.search.clear_layout();
         let mut after_box = false;
         for chunk in chunks(markdown::parse(&md)) {
@@ -230,9 +239,9 @@ impl Viewer {
             // Boxes carry a blank line on each side; two in a row share one.
             let prev_box = std::mem::replace(&mut after_box, matches!(chunk, Chunk::Boxed { .. }));
             let text = match chunk {
-                Chunk::Prose(blocks) => render(&blocks, &self.theme),
+                Chunk::Prose(blocks) => render(&blocks, &self.theme, &mut self.links),
                 Chunk::Boxed { body, title, alert } => {
-                    let mut text = boxed(&body, &title, alert, &self.theme, width);
+                    let mut text = boxed(&body, &title, alert, &self.theme, width, &mut self.links);
                     if prev_box {
                         text.lines.remove(0);
                     }
@@ -246,13 +255,12 @@ impl Viewer {
                         }
                         // Unsupported or invalid diagram: show the source instead.
                         Ok(None) => {
-                            render(&[document::Block::Code { lang, code: source }], &self.theme)
+                            let code = [document::Block::Code { lang, code: source }];
+                            render(&code, &self.theme, &mut self.links)
                         }
                         Err(e) => {
-                            let mut t = render(
-                                &[document::Block::Code { lang, code: source }],
-                                &self.theme,
-                            );
+                            let code = [document::Block::Code { lang, code: source }];
+                            let mut t = render(&code, &self.theme, &mut self.links);
                             t.push_line(Line::from(format!("mermaid render failed: {e}")).red());
                             t
                         }
@@ -307,6 +315,9 @@ impl Viewer {
             match block {
                 Block::Text(p, _) => Paragraph::clone(p).render(area, &mut buf),
                 Block::Image { id, cols, rows } => image_cells(&mut buf, *id, *cols, 0..*rows, 0),
+            }
+            if let Some(urls) = &self.links {
+                link::apply(&mut buf, area, urls);
             }
             for y in 0..area.height {
                 print_row(out, &buf, y, styled)?;
@@ -366,6 +377,9 @@ impl Viewer {
                     cell.set_fg(yamdview::theme::color(self.theme.accent));
                 }
             }
+        }
+        if let Some(urls) = &self.links {
+            link::apply(frame.buffer_mut(), area, urls);
         }
         if status && full.height > 0 {
             let count = if self.search.hits.is_empty() {
@@ -630,6 +644,39 @@ mod tests {
         assert!(
             lines.iter().all(|l| !l.ends_with(' ')),
             "trailing blanks trimmed: {lines:#?}"
+        );
+    }
+
+    #[test]
+    fn links_are_hyperlinks_on_screen_and_in_styled_print_only() {
+        let md = "See [the docs](https://example.com).\n";
+        let viewer = built(md, 40, true);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 1)).unwrap();
+        terminal.draw(|frame| viewer.draw(frame)).unwrap();
+        let cell = &terminal.backend().buffer()[(4, 0)];
+        assert_eq!(
+            cell.symbol(),
+            "\x1b]8;;https://example.com\x1b\\t\x1b]8;;\x1b\\"
+        );
+
+        let styled = printed(md, false, true);
+        assert!(
+            styled.contains("\x1b]8;;https://example.com\x1b\\"),
+            "{styled:?}"
+        );
+        assert!(
+            !styled.contains("(https"),
+            "no URL after the link: {styled:?}"
+        );
+
+        let mut plain = piped(md, false);
+        plain.links = None;
+        let mut out = Vec::new();
+        plain.print(&mut out, 40, false).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "See the docs (https://example.com).\n"
         );
     }
 

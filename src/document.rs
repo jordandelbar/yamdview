@@ -167,3 +167,15 @@ fn visit_inlines<'a>(content: &'a [Inline], f: &mut impl FnMut(Node<'a>)) {
         }
     }
 }
+
+/// The text of `content` as it reads, without its styling.
+pub fn plain(content: &[Inline]) -> String {
+    let mut text = String::new();
+    visit_inlines(content, &mut |node| match node {
+        Node::Inline(Inline::Text(s) | Inline::Code(s) | Inline::Html(s)) => text.push_str(s),
+        Node::Inline(Inline::Math { tex, .. }) => text.push_str(tex),
+        Node::Inline(Inline::FootnoteRef(label)) => text.push_str(&format!("[{label}]")),
+        _ => {}
+    });
+    text
+}

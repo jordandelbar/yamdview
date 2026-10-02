@@ -1,6 +1,7 @@
 //! Documents with mermaid diagrams, rendered for a terminal in one [`Theme`].
 
 pub mod document;
+pub mod link;
 pub mod markdown;
 pub mod theme;
 
@@ -171,7 +172,11 @@ fn alert_kind(kind: AdmonitionKind) -> AlertKind {
 /// footnote reference as one when the definition is in the same text, and a chunk's
 /// definitions are often in a later chunk: a stand-in definition is added for each,
 /// and its lines dropped again.
-pub fn render(blocks: &[Block], theme: &Theme) -> Text<'static> {
+///
+/// With `links`, link text is shown without its URL and tagged to become a hyperlink
+/// (see [`link`]), its URL added to `links`. With `None`, URLs follow in parentheses,
+/// for output nothing can click.
+pub fn render(blocks: &[Block], theme: &Theme, links: &mut Option<Vec<String>>) -> Text<'static> {
     let (mut refs, mut defs) = (Vec::<String>::new(), Vec::new());
     document::visit(blocks, &mut |node| match node {
         Node::Inline(Inline::FootnoteRef(label)) => refs.push(label.to_lowercase()),
@@ -203,6 +208,15 @@ pub fn render(blocks: &[Block], theme: &Theme) -> Text<'static> {
             }
         }
     }
+    if let Some(urls) = links {
+        let mut pending = Vec::new();
+        document::visit(blocks, &mut |node| {
+            if let Node::Inline(Inline::Link { url, content, .. }) = node {
+                pending.push((url.clone(), document::plain(content)));
+            }
+        });
+        link::hide_urls(&mut text, &pending, urls);
+    }
     text
 }
 
@@ -215,8 +229,9 @@ pub fn boxed(
     alert: Option<AlertKind>,
     theme: &Theme,
     width: u16,
+    links: &mut Option<Vec<String>>,
 ) -> Text<'static> {
-    let text = render(body, theme);
+    let text = render(body, theme, links);
     if width < 8 {
         return text;
     }
@@ -375,7 +390,7 @@ mod tests {
         t: &Theme,
         w: u16,
     ) -> Text<'static> {
-        boxed(&markdown::parse(md), title, alert, t, w)
+        boxed(&markdown::parse(md), title, alert, t, w, &mut None)
     }
 
     #[test]
@@ -398,7 +413,7 @@ mod tests {
         split(md)
             .into_iter()
             .map(|c| match c {
-                Chunk::Prose(blocks) => rows(&render(&blocks, &t))
+                Chunk::Prose(blocks) => rows(&render(&blocks, &t, &mut None))
                     .into_iter()
                     .filter(|r| !r.is_empty())
                     .collect::<Vec<_>>()
@@ -447,7 +462,7 @@ mod tests {
         let (Chunk::Prose(first), Chunk::Prose(last)) = (&chunks[0], &chunks[2]) else {
             panic!("prose, box, prose")
         };
-        let text = render(first, &t);
+        let text = render(first, &t, &mut None);
         assert_eq!(
             rows(&text),
             ["See the docs (https://example.com) and a note[1]."],
@@ -463,7 +478,7 @@ mod tests {
             Some(theme::color(t.info)),
             "styled as a footnote reference"
         );
-        assert_eq!(rows(&render(last, &t)), ["[1]: The footnote."]);
+        assert_eq!(rows(&render(last, &t, &mut None)), ["[1]: The footnote."]);
     }
 
     #[test]

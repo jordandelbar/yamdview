@@ -36,6 +36,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let terminal_out = std::io::stdout().is_terminal();
     if args.print || !terminal_out {
         v.images &= args.print && terminal_out;
+        // Plain output can't be clicked: keep each URL after its link.
+        if !args.print {
+            v.links = None;
+        }
         return print(v, args.print);
     }
     tui::run(v, args.mouse)
