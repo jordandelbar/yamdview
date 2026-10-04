@@ -133,12 +133,18 @@ The theme file has one `role = #rrggbb` line per role, and every role is
 required. An optional `font-family = Name` line sets the font used in
 diagrams.
 
+Without a theme file, bold and italic text keep the body color, so only the
+font sets them apart. In a theme file, give `bold` and `italic` the
+`foreground` value for the same look, or colors of their own to make them
+stand out.
+
 | Roles                                                                     | Used for                                                                               |
 | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | `background`, `foreground`                                                | Page background and body text                                                          |
 | `selection`                                                               | Search matches and mouse selection                                                     |
 | `muted`                                                                   | Rules, table borders, metadata                                                         |
-| `heading`, `bold`, `italic`, `code`, `link`, `quote`                      | Markdown text (`code` is inline code)                                                  |
+| `heading`, `code`, `link`, `quote`                                        | Markdown text (`code` is inline code)                                                  |
+| `bold`, `italic`                                                          | Bold and italic text                                                                   |
 | `comment`, `keyword`, `string`, `function`, `type`, `number`, `parameter` | Syntax highlighting in code blocks                                                     |
 | `accent`                                                                  | Diagram borders and node tint, the current match, `[!IMPORTANT]` alerts                |
 | `note`                                                                    | Diagram notes                                                                          |
