@@ -156,6 +156,8 @@ impl Tui {
             }
             KeyCode::Char(']') => v.heading(s, false).unwrap_or(s),
             KeyCode::Char('[') => v.heading(s, true).unwrap_or(s),
+            KeyCode::Char('}') => v.block(s, false).unwrap_or(s),
+            KeyCode::Char('{') => v.block(s, true).unwrap_or(s),
             KeyCode::Char('n') => return Move::Jump(v.search.jump(s, false).unwrap_or(s)),
             KeyCode::Char('N') => return Move::Jump(v.search.jump(s, true).unwrap_or(s)),
             KeyCode::Esc if !v.search.query.is_empty() => {

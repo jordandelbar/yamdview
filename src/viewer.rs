@@ -63,15 +63,35 @@ impl Block {
     }
 }
 
+/// The first of `rows` (in order) below `from`, or with `backwards` the last above it.
+fn next(rows: &[u32], from: u32, backwards: bool) -> Option<u32> {
+    if backwards {
+        rows.iter().rev().find(|&&row| row < from).copied()
+    } else {
+        rows.iter().find(|&&row| row > from).copied()
+    }
+}
+
+/// A stretch of laid-out text, with the rows (within it) that `[`/`]` and `{`/`}` jump to.
+pub struct Laid {
+    pub paragraph: Paragraph<'static>,
+    pub rows: u16,
+    pub headings: Vec<u16>,
+    /// Where a paragraph, list, table or box starts: a non-blank line after a blank one.
+    pub starts: Vec<u16>,
+}
+
 /// Wrap `text` into paragraphs of about 1024 rows, split between source lines (wrapping
 /// is per line, so rows add up exactly). ratatui scrolls a Paragraph by u16 rows, and
-/// small blocks keep per-frame clones and search layout cheap. Each block comes with
-/// the rows, within it, where the lines matching `heading` start.
+/// small blocks keep per-frame clones and search layout cheap. Each comes with the
+/// rows where the lines matching `heading` start, and where blocks start. `after_blank`
+/// says whether the line before `text` was blank, and is left saying it for the last.
 pub fn paragraphs(
     text: Text<'static>,
     width: u16,
     heading: impl Fn(&Line) -> bool,
-) -> Vec<(Paragraph<'static>, u16, Vec<u16>)> {
+    after_blank: &mut bool,
+) -> Vec<Laid> {
     let Text {
         lines,
         style,
@@ -79,35 +99,44 @@ pub fn paragraphs(
     } = text;
     // ponytail: one source line wrapping past 65535 rows (~5 MB at 80 columns) is cut there.
     let clamp = |rows: usize| u16::try_from(rows).unwrap_or(u16::MAX);
-    let block = |lines, rows: usize, heads| {
-        let p = Paragraph::new(Text {
+    let laid = |lines, rows: usize, headings, starts| Laid {
+        paragraph: Paragraph::new(Text {
             lines,
             style,
             alignment,
         })
-        .wrap(Wrap { trim: false });
-        (p, clamp(rows), heads)
+        .wrap(Wrap { trim: false }),
+        rows: clamp(rows),
+        headings,
+        starts,
     };
-    let (mut out, mut chunk, mut rows, mut heads) = (Vec::new(), Vec::new(), 0, Vec::new());
+    let (mut out, mut chunk, mut rows) = (Vec::new(), Vec::new(), 0);
+    let (mut heads, mut starts) = (Vec::new(), Vec::new());
     for line in lines {
         let n = Paragraph::new(line.clone())
             .wrap(Wrap { trim: false })
             .line_count(width);
         if rows + n > 1024 && !chunk.is_empty() {
-            out.push(block(
+            out.push(laid(
                 std::mem::take(&mut chunk),
                 rows,
                 std::mem::take(&mut heads),
+                std::mem::take(&mut starts),
             ));
             rows = 0;
         }
         if heading(&line) {
             heads.push(clamp(rows));
         }
+        let blank = line.spans.iter().all(|s| s.content.trim().is_empty());
+        if !blank && *after_blank {
+            starts.push(clamp(rows));
+        }
+        *after_blank = blank;
         rows += n;
         chunk.push(line);
     }
-    out.push(block(chunk, rows, heads));
+    out.push(laid(chunk, rows, heads, starts));
     out
 }
 
@@ -126,6 +155,9 @@ pub struct Viewer {
     pub path: PathBuf,
     /// Document rows where headings start, in order, for `[` and `]`.
     headings: Vec<u32>,
+    /// Document rows where blocks start (paragraphs, lists, tables, boxes, diagrams),
+    /// in order, for `{` and `}`.
+    starts: Vec<u32>,
     /// Markdown piped in on stdin. Replaces the file, and there's nothing to watch.
     pub stdin: Option<String>,
     pub mtime: Option<SystemTime>,
@@ -153,6 +185,7 @@ impl Viewer {
         Viewer {
             path,
             headings: Vec::new(),
+            starts: Vec::new(),
             stdin,
             mtime: None,
             blocks: Vec::new(),
@@ -211,6 +244,7 @@ impl Viewer {
         let id = (std::process::id() & 0xffff) << 8 | (self.ids.len() as u32 + 1);
         upload(out, id, png, cols, rows, self.tmux)?;
         self.ids.push(id);
+        self.starts.push(self.total());
         self.blocks.push(Block::Image { id, cols, rows });
         Ok(())
     }
@@ -222,6 +256,9 @@ impl Viewer {
         let cell = cell_size();
         self.blocks.clear();
         self.headings.clear();
+        self.starts.clear();
+        // The document starts after nothing, and a diagram ends with a blank row.
+        let mut after_blank = true;
         if let Some(links) = &mut self.links {
             links.clear();
         }
@@ -251,6 +288,7 @@ impl Viewer {
                     match diagram(&source, &self.theme, u32::from(width) * cell.0, cell.1) {
                         Ok(Some(png)) => {
                             self.push_image(out, &png, cell)?;
+                            after_blank = true;
                             continue;
                         }
                         // Unsupported or invalid diagram: show the source instead.
@@ -267,11 +305,14 @@ impl Viewer {
                     }
                 }
             };
-            for (p, h, heads) in paragraphs(text, width, |line| is_heading(line, &self.theme)) {
+            let heading = |line: &Line| is_heading(line, &self.theme);
+            for laid in paragraphs(text, width, heading, &mut after_blank) {
                 let offset = self.total();
-                self.headings
-                    .extend(heads.into_iter().map(|row| offset + u32::from(row)));
-                self.blocks.push(Block::Text(Box::new(p), h));
+                let rows = |rows: Vec<u16>| rows.into_iter().map(move |r| offset + u32::from(r));
+                self.headings.extend(rows(laid.headings));
+                self.starts.extend(rows(laid.starts));
+                self.blocks
+                    .push(Block::Text(Box::new(laid.paragraph), laid.rows));
             }
         }
         if self.search.active() {
@@ -297,11 +338,12 @@ impl Viewer {
 
     /// The first heading below row `from`, or with `backwards` the last one above it.
     pub fn heading(&self, from: u32, backwards: bool) -> Option<u32> {
-        if backwards {
-            self.headings.iter().rev().find(|&&row| row < from).copied()
-        } else {
-            self.headings.iter().find(|&&row| row > from).copied()
-        }
+        next(&self.headings, from, backwards)
+    }
+
+    /// The first block start below row `from`, or with `backwards` the last one above it.
+    pub fn block(&self, from: u32, backwards: bool) -> Option<u32> {
+        next(&self.starts, from, backwards)
     }
 
     /// Render the whole document once to `out`, for pipes, files and tmux's history:
@@ -499,22 +541,67 @@ mod tests {
     }
 
     #[test]
+    fn block_jumps_land_on_each_paragraph_list_box_and_diagram() {
+        let md = "# Title\n\nA paragraph long enough to wrap onto a second row.\n\n- one\n- two\n\n```sh\nls\n```\n\n> [!TIP]\n> boxed\n\nRight above.\n```mermaid\ngraph TD\n  A-->B\n```\n\nLast.\n";
+        let viewer = built(md, 30, true);
+        let rows = rows(&viewer, 30, viewer.total() as u16);
+        let starts: Vec<&str> = viewer
+            .starts
+            .iter()
+            .map(|&row| rows[row as usize].as_str())
+            .collect();
+        let diagram = starts[6];
+        assert!(diagram.starts_with('\u{10EEEE}'), "{starts:?}");
+        assert_eq!(
+            starts,
+            [
+                "Title",
+                "A paragraph long enough to",
+                "- one",
+                "╭─ sh ╮",
+                "╭─ Tip ─╮",
+                "Right above.",
+                diagram,
+                "Last."
+            ],
+            "a wrapped paragraph and a tight list are one block each"
+        );
+
+        let s = viewer.starts.clone();
+        assert_eq!(viewer.block(0, false), Some(s[1]));
+        assert_eq!(
+            viewer.block(s[1] + 1, false),
+            Some(s[2]),
+            "from inside a paragraph"
+        );
+        assert_eq!(viewer.block(s[4], true), Some(s[3]));
+        assert_eq!(viewer.block(s[7], false), None, "no wrap-around at the end");
+        assert_eq!(viewer.block(0, true), None);
+    }
+
+    #[test]
     fn heading_rows_are_relative_to_their_block() {
         let mut lines: Vec<Line> = (0..1500).map(|_| Line::from("x")).collect();
         lines[1100] = Line::from("H");
-        let blocks = paragraphs(Text::from(lines), 10, |l| {
-            l.spans.first().is_some_and(|s| s.content == "H")
-        });
+        let heading = |l: &Line| l.spans.first().is_some_and(|s| s.content == "H");
+        let blocks = paragraphs(Text::from(lines), 10, heading, &mut true);
         assert_eq!(blocks.len(), 2);
-        assert_eq!((blocks[0].1, blocks[0].2.as_slice()), (1024, &[][..]));
-        assert_eq!(blocks[1].2, [1100 - 1024], "offset within the second block");
+        assert_eq!(
+            (blocks[0].rows, blocks[0].headings.as_slice()),
+            (1024, &[][..])
+        );
+        assert_eq!(
+            blocks[1].headings,
+            [1100 - 1024],
+            "offset within the second block"
+        );
     }
 
     #[test]
     fn single_line_past_u16_rows_is_cut_off() {
-        let blocks = paragraphs(Text::from("x ".repeat(70_000)), 1, |_| false);
+        let blocks = paragraphs(Text::from("x ".repeat(70_000)), 1, |_| false, &mut true);
         assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0].1, u16::MAX);
+        assert_eq!(blocks[0].rows, u16::MAX);
     }
 
     #[test]
