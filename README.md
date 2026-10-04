@@ -128,13 +128,21 @@ keys, search, mouse selection, tmux setup and themes.
 ```mermaid
 flowchart LR
     A[README.md] --> B{pulldown-cmark}
-    B -->|text| C[tui-markdown]
-    B -->|mermaid block| D[merman]
-    D --> E[PNG]
-    E --> F[kitty protocol]
-    C --> G((terminal))
-    F --> G
+    B --> C[document model]
+    C --> D{chunks}
+    D -->|text, code, alerts| E[tui-markdown]
+    D -->|mermaid block| F[merman]
+    F --> G[PNG]
+    G --> H[kitty protocol]
+    E --> I((terminal))
+    H --> I
 ```
+
+The file is parsed into yamdview's own document model, not drawn straight from
+the Markdown, so another format only needs a parser. The model is split into
+chunks: text, boxed code and alerts go back out as Markdown to tui-markdown,
+which styles them, and each mermaid diagram goes to merman, which renders a PNG
+that the kitty graphics protocol places among the text.
 
 ## Development
 
