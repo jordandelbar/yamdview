@@ -91,7 +91,8 @@ struct Palette {
 
 impl Palette {
     /// Dracula's role assignments: its spec for code (https://draculatheme.com/spec) and
-    /// its VS Code theme for markdown, which the spec doesn't cover.
+    /// its VS Code theme for markdown, which the spec doesn't cover. Except bold and
+    /// italic, which keep the text color.
     fn roles(self, font: String) -> Theme {
         Theme {
             background: self.background,
@@ -99,8 +100,8 @@ impl Palette {
             selection: self.selection,
             muted: self.comment,
             heading: self.purple,
-            bold: self.orange,
-            italic: self.yellow,
+            bold: self.foreground,
+            italic: self.foreground,
             code: self.green,
             link: self.cyan,
             quote: self.yellow,
@@ -444,7 +445,7 @@ mod tests {
     const DRACULA_CONFIG: &str = "\
         # comments and blank lines are fine\n\n\
         background = #282a36\nforeground = #f8f8f2\nselection = #44475a\nmuted = #6272a4\n\
-        heading = #bd93f9\nbold = #ffb86c\nitalic = #f1fa8c\ncode = #50fa7b\nlink = #8be9fd\n\
+        heading = #bd93f9\nbold = #f8f8f2\nitalic = #f8f8f2\ncode = #50fa7b\nlink = #8be9fd\n\
         quote = #f1fa8c\ncomment = #6272a4\nkeyword = #ff79c6\nstring = #f1fa8c\n\
         function = #50fa7b\ntype = #8be9fd\nnumber = #ffb86c\nparameter = #ffb86c\n\
         accent = #bd93f9\nnote = #f1fa8c\ninfo = #8be9fd\nsuccess = #50fa7b\n\
