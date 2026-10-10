@@ -71,7 +71,7 @@ prebuilt release binary instead:
 
 ```nix
 inputs.yamdview-bin = {
-  url = "file+https://github.com/jordandelbar/yamdview/releases/download/v0.4.1/yamdview-x86_64-linux"; # x-release-please-version
+  url = "file+https://github.com/jordandelbar/yamdview/releases/download/v0.5.0/yamdview-x86_64-linux"; # x-release-please-version
   flake = false;
 };
 ```
