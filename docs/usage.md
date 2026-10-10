@@ -57,6 +57,7 @@ shell pane. The viewer can't offer that, since tmux only sees one screen of it.
 | `g`, `Home`         | Go to the top                                |
 | `G`, `End`          | Go to the bottom                             |
 | `]`, `[`            | Next, previous heading                       |
+| `}`, `{`            | Next, previous paragraph, box or diagram     |
 | `/`                 | Start a search                               |
 | `n`, `N`            | Next, previous match                         |
 | `Esc`               | Clear the search, or quit if there isn't one |
