@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.5.0](https://github.com/jordandelbar/yamdview/compare/v0.4.1...v0.5.0) (2026-10-10)
+
+
+### Features
+
+* Jump between paragraphs ([#31](https://github.com/jordandelbar/yamdview/issues/31)) ([6f0bf9a](https://github.com/jordandelbar/yamdview/commit/6f0bf9a5b0f40db483cd8d03a20bc58f97bb8b65))
+* Show bold and italic in the text color by default ([#30](https://github.com/jordandelbar/yamdview/issues/30)) ([8223a19](https://github.com/jordandelbar/yamdview/commit/8223a196bfb0b01a42c71287de8b8deaa4fe8f9b))
+* Show links as clickable text without their URL ([#28](https://github.com/jordandelbar/yamdview/issues/28)) ([de29677](https://github.com/jordandelbar/yamdview/commit/de29677203a9491f0b1d45255bc4a89656b68ad3))
+
+
+### Refactor
+
+* Parse documents into a format-neutral model ([#25](https://github.com/jordandelbar/yamdview/issues/25)) ([0aa0934](https://github.com/jordandelbar/yamdview/commit/0aa0934812ba744bb36ed9c09113f7bfc4df0def))
+
 ## [0.4.1](https://github.com/jordandelbar/yamdview/compare/v0.4.0...v0.4.1) (2026-10-01)
 
 
