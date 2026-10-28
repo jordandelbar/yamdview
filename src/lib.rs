@@ -17,9 +17,19 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{Paragraph, Widget, Wrap},
 };
+use std::path::Path;
 pub use theme::Theme;
 pub use tui_markdown::AlertKind;
 use tui_markdown::StyleSheet;
+
+/// The parser for a file, by its extension: `None` when yamdview can't show it.
+/// Add a format here and links to its files open in the viewer too.
+pub fn parser(path: &Path) -> Option<fn(&str) -> Document> {
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "md" | "markdown" => Some(markdown::parse),
+        _ => None,
+    }
+}
 
 /// A stretch of a document the viewer lays out one way.
 pub enum Chunk {
