@@ -10,7 +10,18 @@ use std::{
 
 /// Kitty graphics escape, wrapped for tmux passthrough (`allow-passthrough on`) when needed.
 pub fn kitty(out: &mut impl Write, body: &str, tmux: bool) -> std::io::Result<()> {
-    let seq = format!("\x1b_G{body}\x1b\\");
+    passthrough(out, &format!("\x1b_G{body}\x1b\\"), tmux)
+}
+
+/// Set the mouse pointer's shape (OSC 22): `pointer` over a link, `default` elsewhere.
+/// Terminals without it (and tmux without passthrough) ignore it.
+pub fn pointer(out: &mut impl Write, shape: &str, tmux: bool) -> std::io::Result<()> {
+    passthrough(out, &format!("\x1b]22;{shape}\x1b\\"), tmux)?;
+    out.flush()
+}
+
+/// An escape for the outer terminal, wrapped for tmux passthrough when needed.
+fn passthrough(out: &mut impl Write, seq: &str, tmux: bool) -> std::io::Result<()> {
     if tmux {
         write!(out, "\x1bPtmux;{}\x1b\\", seq.replace('\x1b', "\x1b\x1b"))
     } else {

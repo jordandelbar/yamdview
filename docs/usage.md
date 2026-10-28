@@ -47,22 +47,41 @@ shell pane. The viewer can't offer that, since tmux only sees one screen of it.
 
 ## Keys
 
-| Key                 | Action                                       |
-| ------------------- | -------------------------------------------- |
-| `j`, `Down`         | Scroll down one line                         |
-| `k`, `Up`           | Scroll up one line                           |
-| `space`, `PageDown` | Page down                                    |
-| `b`, `PageUp`       | Page up                                      |
-| `ctrl-d`, `ctrl-u`  | Half a page down, up                         |
-| `g`, `Home`         | Go to the top                                |
-| `G`, `End`          | Go to the bottom                             |
-| `]`, `[`            | Next, previous heading                       |
-| `}`, `{`            | Next, previous paragraph, box or diagram     |
-| `/`                 | Start a search                               |
-| `n`, `N`            | Next, previous match                         |
-| `Esc`               | Clear the search, or quit if there isn't one |
-| `q`, `ctrl-c`       | Quit                                         |
-| Mouse wheel         | Scroll three lines                           |
+| Key                 | Action                                          |
+| ------------------- | ----------------------------------------------- |
+| `j`, `Down`         | Scroll down one line                            |
+| `k`, `Up`           | Scroll up one line                              |
+| `space`, `PageDown` | Page down                                       |
+| `b`, `PageUp`       | Page up                                         |
+| `ctrl-d`, `ctrl-u`  | Half a page down, up                            |
+| `g`, `Home`         | Go to the top                                   |
+| `G`, `End`          | Go to the bottom                                |
+| `]`, `[`            | Next, previous heading                          |
+| `}`, `{`            | Next, previous paragraph, box or diagram        |
+| `/`                 | Start a search                                  |
+| `n`, `N`            | Next, previous match                            |
+| `Tab`, `shift-Tab`  | Pick the next, previous link on screen          |
+| `Enter`             | Follow the picked link                          |
+| `Backspace`         | Go back to where you followed a link from       |
+| `Esc`               | Drop the picked link, clear the search, or quit |
+| `q`, `ctrl-c`       | Quit                                            |
+| Mouse wheel         | Scroll three lines                              |
+| Click a link        | Follow it                                       |
+
+## Links between files
+
+A link to another markdown file, relative to the one you're reading, opens it in
+yamdview: `[guide](docs/guide.md)`. One with an anchor, `docs/guide.md#setup` or
+just `#setup`, scrolls to that heading. Anchors are made as GitHub makes them:
+lowercase, punctuation dropped, spaces as dashes, and `-1`, `-2` for repeated
+headings. A heading's own `{#id}` wins. `Backspace` goes back, as far as you came.
+
+A link under the mouse is highlighted, and the pointer turns into a hand in
+terminals that let programs set its shape (Ghostty, kitty, foot). In
+tmux the hand needs `set -g allow-passthrough on`, as diagrams do.
+
+Web links, missing files and files yamdview can't show are not followed. Try it
+on [the example](../examples/links/README.md).
 
 ## Search
 

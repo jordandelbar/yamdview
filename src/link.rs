@@ -9,7 +9,11 @@ use ratatui::{
     style::Color,
     text::{Span, Text},
 };
-use std::num::NonZeroU16;
+use std::{
+    num::NonZeroU16,
+    ops::Range,
+    path::{Path, PathBuf},
+};
 
 /// Link `id` (from 1) as an underline color: never drawn, [`apply`] clears it.
 fn tag(id: usize) -> Color {
@@ -100,10 +104,176 @@ pub fn visible(symbol: &str) -> &str {
     }
 }
 
+/// The URL of a cell [`apply`] made a hyperlink.
+pub fn url(symbol: &str) -> Option<&str> {
+    let (url, _) = symbol.strip_prefix("\x1b]8;;")?.split_once("\x1b\\")?;
+    Some(url)
+}
+
+/// A link on screen: its row, the columns its text covers, and its URL.
+#[derive(Debug, PartialEq)]
+pub struct Spot {
+    pub y: u16,
+    pub x: Range<u16>,
+    pub url: String,
+}
+
+/// The links in `buf`, in reading order.
+/// ponytail: a link wrapped onto the next row is two spots, one per row.
+pub fn on_screen(buf: &Buffer) -> Vec<Spot> {
+    let mut spots: Vec<Spot> = Vec::new();
+    for y in buf.area.top()..buf.area.bottom() {
+        let mut x = buf.area.left();
+        while x < buf.area.right() {
+            let symbol = buf[(x, y)].symbol();
+            let width = (Span::raw(visible(symbol)).width() as u16).max(1);
+            if let Some(url) = url(symbol) {
+                match spots.last_mut() {
+                    Some(s) if s.y == y && s.x.end == x && s.url == url => s.x.end = x + width,
+                    _ => spots.push(Spot {
+                        y,
+                        x: x..x + width,
+                        url: url.to_string(),
+                    }),
+                }
+            }
+            x += width;
+        }
+    }
+    spots
+}
+
+/// Where a link leads inside the viewer: a file (`None` for the current one), and a
+/// heading's anchor in it.
+#[derive(Debug, PartialEq)]
+pub struct Target {
+    pub file: Option<PathBuf>,
+    pub anchor: Option<String>,
+}
+
+/// Where `url`, a link in the document at `doc`, leads if yamdview can show it: a
+/// relative path to a file it has a [`crate::parser`] for, an `#anchor`, or both.
+/// URLs with a scheme are left to the terminal.
+/// ponytail: no percent-decoding, so `my%20notes.md` won't open; `<my notes.md>` will.
+pub fn resolve(url: &str, doc: &Path) -> Option<Target> {
+    let scheme = url
+        .find(':')
+        .is_some_and(|i| !url[..i].contains(['/', '#']));
+    if scheme || url.starts_with("//") {
+        return None;
+    }
+    let (path, anchor) = match url.split_once('#') {
+        Some((path, anchor)) => (path, Some(anchor.to_string())),
+        None => (url, None),
+    };
+    let path = path.split('?').next().unwrap_or_default();
+    if path.is_empty() {
+        return anchor.filter(|a| !a.is_empty()).map(|anchor| Target {
+            file: None,
+            anchor: Some(anchor),
+        });
+    }
+    let file = doc.parent().unwrap_or(Path::new("")).join(path);
+    (file.is_file() && crate::parser(&file).is_some()).then(|| Target {
+        file: Some(file),
+        anchor: anchor.filter(|a| !a.is_empty()),
+    })
+}
+
+/// The anchor GitHub gives a heading's text: lowercased, punctuation dropped, spaces
+/// as dashes. An explicit id (`# Title {#id}`) wins.
+pub fn slug(text: &str) -> String {
+    let id = text
+        .trim_end()
+        .strip_suffix('}')
+        .and_then(|t| t.rsplit_once(" {"))
+        .and_then(|(_, attrs)| attrs.split(' ').find_map(|a| a.strip_prefix('#')));
+    if let Some(id) = id {
+        return id.to_string();
+    }
+    text.trim()
+        .to_lowercase()
+        .chars()
+        .filter_map(|c| match c {
+            ' ' => Some('-'),
+            c if c.is_alphanumeric() || c == '-' || c == '_' => Some(c),
+            _ => None,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{Theme, markdown, render};
+
+    #[test]
+    fn resolves_relative_links_and_anchors_only() {
+        let dir = std::env::temp_dir().join(format!("yamdview-links-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("docs")).unwrap();
+        std::fs::write(dir.join("docs/guide.md"), "").unwrap();
+        std::fs::write(dir.join("logo.png"), "").unwrap();
+        let doc = dir.join("README.md");
+        let file = |file: &str, anchor: Option<&str>| {
+            Some(Target {
+                file: Some(dir.join(file)),
+                anchor: anchor.map(String::from),
+            })
+        };
+        let found = [
+            "docs/guide.md",
+            "docs/guide.md#setup",
+            "#usage",
+            "https://x/guide.md",
+            "mailto:a@b",
+            "missing.md",
+            "logo.png",
+            "#",
+        ]
+        .map(|url| resolve(url, &doc));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(found[0], file("docs/guide.md", None));
+        assert_eq!(found[1], file("docs/guide.md", Some("setup")));
+        assert_eq!(
+            found[2],
+            Some(Target {
+                file: None,
+                anchor: Some("usage".into())
+            })
+        );
+        assert_eq!(found[3..], [None, None, None, None, None]);
+    }
+
+    #[test]
+    fn slugs_like_github() {
+        assert_eq!(slug("Getting Started!"), "getting-started");
+        assert_eq!(slug("API: v2 & more"), "api-v2--more");
+        assert_eq!(slug("Install {#setup .wide}"), "setup");
+    }
+
+    #[test]
+    fn finds_links_on_screen_across_wide_characters() {
+        let mut buf = Buffer::with_lines(["a 猫b c"]);
+        for x in 2..5 {
+            buf[(x, 0)].underline_color = tag(1);
+        }
+        buf[(6, 0)].underline_color = tag(2);
+        let area = buf.area;
+        apply(
+            &mut buf,
+            area,
+            &["one.md".to_string(), "two.md".to_string()],
+        );
+        let spot = |x, url: &str| Spot {
+            y: 0,
+            x,
+            url: url.into(),
+        };
+        assert_eq!(
+            on_screen(&buf),
+            [spot(2..5, "one.md"), spot(6..7, "two.md")]
+        );
+    }
 
     /// `md` rendered with clickable links: its rows, each link's text, and the URLs.
     fn linked(md: &str) -> (Vec<String>, Vec<String>, Vec<String>) {

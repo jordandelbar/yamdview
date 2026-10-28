@@ -15,7 +15,7 @@ use ratatui::{
 };
 use std::{io::Write, path::PathBuf, time::SystemTime};
 use yamdview::{
-    Chunk, Theme, boxed, chunks, diagram, document, is_heading, link, markdown, render,
+    Chunk, Theme, boxed, chunks, diagram, document, is_heading, link, markdown, parser, render,
 };
 
 /// One buffer row as a line of output: plain text, or styled runs of cells.
@@ -76,7 +76,8 @@ fn next(rows: &[u32], from: u32, backwards: bool) -> Option<u32> {
 pub struct Laid {
     pub paragraph: Paragraph<'static>,
     pub rows: u16,
-    pub headings: Vec<u16>,
+    /// Each heading's row and text.
+    pub headings: Vec<(u16, String)>,
     /// Where a paragraph, list, table or box starts: a non-blank line after a blank one.
     pub starts: Vec<u16>,
 }
@@ -126,7 +127,8 @@ pub fn paragraphs(
             rows = 0;
         }
         if heading(&line) {
-            heads.push(clamp(rows));
+            let text = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            heads.push((clamp(rows), text));
         }
         let blank = line.spans.iter().all(|s| s.content.trim().is_empty());
         if !blank && *after_blank {
@@ -155,6 +157,12 @@ pub struct Viewer {
     pub path: PathBuf,
     /// Document rows where headings start, in order, for `[` and `]`.
     headings: Vec<u32>,
+    /// Each heading's anchor, as [`link::slug`] makes them, for links to `#anchor`.
+    anchors: Vec<String>,
+    /// The anchor a followed link asked for, to scroll to once the new file is laid out.
+    pending: Option<String>,
+    /// Where `Backspace` goes back to: the file (or stdin) and row before each link.
+    history: Vec<(PathBuf, Option<String>, u32)>,
     /// Document rows where blocks start (paragraphs, lists, tables, boxes, diagrams),
     /// in order, for `{` and `}`.
     starts: Vec<u32>,
@@ -185,6 +193,9 @@ impl Viewer {
         Viewer {
             path,
             headings: Vec::new(),
+            anchors: Vec::new(),
+            pending: None,
+            history: Vec::new(),
             starts: Vec::new(),
             stdin,
             mtime: None,
@@ -256,6 +267,7 @@ impl Viewer {
         let cell = cell_size();
         self.blocks.clear();
         self.headings.clear();
+        self.anchors.clear();
         self.starts.clear();
         // The document starts after nothing, and a diagram ends with a blank row.
         let mut after_blank = true;
@@ -264,7 +276,8 @@ impl Viewer {
         }
         self.search.clear_layout();
         let mut after_box = false;
-        for chunk in chunks(markdown::parse(&md)) {
+        let parse = parser(&self.path).unwrap_or(markdown::parse);
+        for chunk in chunks(parse(&md)) {
             let chunk = match chunk {
                 Chunk::Mermaid { lang, source } if !self.images => Chunk::Boxed {
                     body: vec![document::Block::Code { lang, code: source }],
@@ -309,7 +322,18 @@ impl Viewer {
             for laid in paragraphs(text, width, heading, &mut after_blank) {
                 let offset = self.total();
                 let rows = |rows: Vec<u16>| rows.into_iter().map(move |r| offset + u32::from(r));
-                self.headings.extend(rows(laid.headings));
+                for (row, text) in laid.headings {
+                    self.headings.push(offset + u32::from(row));
+                    // Repeats get -1, -2, ... as on GitHub.
+                    let slug = link::slug(&text);
+                    let repeat = |a: &String| {
+                        a.strip_prefix(&slug)
+                            .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
+                    };
+                    let n = self.anchors.iter().filter(|a| repeat(a)).count();
+                    self.anchors
+                        .push(if n == 0 { slug } else { format!("{slug}-{n}") });
+                }
                 self.starts.extend(rows(laid.starts));
                 self.blocks
                     .push(Block::Text(Box::new(laid.paragraph), laid.rows));
@@ -319,7 +343,49 @@ impl Viewer {
             self.cache_search(width);
         }
         self.search.refresh();
+        if let Some(anchor) = self.pending.take() {
+            self.scroll = self.anchor(&anchor).unwrap_or(0);
+        }
         out.flush()
+    }
+
+    /// The row of the heading with this anchor.
+    pub fn anchor(&self, name: &str) -> Option<u32> {
+        let i = self
+            .anchors
+            .iter()
+            .position(|a| a.eq_ignore_ascii_case(name))?;
+        Some(self.headings[i])
+    }
+
+    /// Follow a link if it leads somewhere in yamdview: `Some(true)` when another file
+    /// has to be laid out (and then scrolled to its anchor), `Some(false)` when the
+    /// view just scrolled to a heading here. The view it leaves goes on the back stack.
+    pub fn follow(&mut self, url: &str) -> Option<bool> {
+        let target = link::resolve(url, &self.path)?;
+        let here = (self.path.clone(), self.stdin.clone(), self.scroll);
+        let Some(file) = target.file else {
+            self.scroll = self.anchor(target.anchor.as_deref()?)?;
+            self.history.push(here);
+            return Some(false);
+        };
+        self.history.push(here);
+        (self.path, self.stdin, self.scroll) = (file, None, 0);
+        self.pending = target.anchor;
+        self.search.cancel();
+        Some(true)
+    }
+
+    /// Go back to where the last followed link was: `Some(true)` when that's another
+    /// file to lay out again.
+    pub fn back(&mut self) -> Option<bool> {
+        let (path, stdin, scroll) = self.history.pop()?;
+        let reload = path != self.path || stdin != self.stdin;
+        (self.path, self.stdin, self.scroll) = (path, stdin, scroll);
+        if reload {
+            self.search.cancel();
+        }
+        Some(reload)
     }
 
     /// Lay out the text for search on first use; `rebuild` drops the cache.
@@ -592,9 +658,42 @@ mod tests {
         );
         assert_eq!(
             blocks[1].headings,
-            [1100 - 1024],
+            [(1100 - 1024, "H".to_string())],
             "offset within the second block"
         );
+    }
+
+    #[test]
+    fn follows_links_to_files_and_headings_and_back() {
+        let dir = std::env::temp_dir().join(format!("yamdview-follow-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let filler = "x\n\n".repeat(20);
+        let guide = format!("# Guide\n\n{filler}## Setup\n\n{filler}## Setup\n");
+        std::fs::write(dir.join("guide.md"), guide).unwrap();
+        let readme = dir.join("README.md");
+        std::fs::write(&readme, format!("# Readme\n\n{filler}## Usage {{#use}}\n")).unwrap();
+        let mut v = Viewer::new(readme.clone(), None, false, false, Theme::dracula());
+        v.rebuild(&mut Vec::new(), 40).unwrap();
+
+        assert_eq!(v.follow("#use"), Some(false), "a heading here: just scroll");
+        let usage = v.scroll;
+        assert_eq!(usage, v.headings[1]);
+        assert_eq!(v.follow("https://example.com"), None);
+        assert_eq!(v.follow("missing.md"), None);
+        assert_eq!(v.scroll, usage, "unfollowed links don't move");
+
+        assert_eq!(v.follow("guide.md#setup-1"), Some(true));
+        v.rebuild(&mut Vec::new(), 40).unwrap();
+        assert_eq!(v.path, dir.join("guide.md"));
+        assert_eq!(v.scroll, v.headings[2], "the second Setup");
+
+        assert_eq!(v.back(), Some(true), "another file: lay it out again");
+        v.rebuild(&mut Vec::new(), 40).unwrap();
+        assert_eq!((v.path.clone(), v.scroll), (readme, usage));
+        assert_eq!(v.back(), Some(false));
+        assert_eq!(v.scroll, 0);
+        assert_eq!(v.back(), None, "nothing left to go back to");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
